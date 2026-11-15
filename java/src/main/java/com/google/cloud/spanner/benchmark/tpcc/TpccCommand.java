@@ -131,11 +131,7 @@ public class TpccCommand implements Runnable {
         spannerOptionsBuilder.setCredentials(NoCredentials.getInstance());
       }
       BenchmarkApp.configureChannels(
-          spannerOptionsBuilder,
-          config.getNumChannels(),
-          config.getMinChannels(),
-          config,
-          System.getenv("SPANNER_NUM_CHANNELS"));
+          spannerOptionsBuilder, config, System.getenv("SPANNER_NUM_CHANNELS"));
       SpannerOptions spannerOptions = spannerOptionsBuilder.build();
       if (Boolean.TRUE.equals(spannerOptions.isEnableDirectAccess())
           || "true".equalsIgnoreCase(System.getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS"))) {

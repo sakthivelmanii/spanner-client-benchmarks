@@ -507,7 +507,7 @@ public class BenchmarkAppTest extends AbstractBenchmarkTest {
       assertEquals(Integer.valueOf(120), config.getSteps().get(3).getConcurrency());
 
       SpannerOptions.Builder builder = SpannerOptions.newBuilder().setProjectId("test-proj");
-      BenchmarkApp.configureChannels(builder, null, null, config, null);
+      BenchmarkApp.configureChannels(builder, config, null);
       SpannerOptions options = builder.build();
       assertTrue(options.isEnableBuiltInMetrics());
       assertNotNull(options.getGcpChannelPoolOptions());
@@ -515,20 +515,12 @@ public class BenchmarkAppTest extends AbstractBenchmarkTest {
       assertEquals(3, options.getGcpChannelPoolOptions().getMaxSize());
       assertEquals(1, options.getGcpChannelPoolOptions().getInitSize());
 
-      SpannerOptions.Builder cliOverrideBuilder =
-          SpannerOptions.newBuilder().setProjectId("test-proj");
-      BenchmarkApp.configureChannels(cliOverrideBuilder, 6, 2, config, null);
-      SpannerOptions cliOptions = cliOverrideBuilder.build();
-      assertNotNull(cliOptions.getGcpChannelPoolOptions());
-      assertEquals(2, cliOptions.getGcpChannelPoolOptions().getMinSize());
-      assertEquals(6, cliOptions.getGcpChannelPoolOptions().getMaxSize());
-
       SpannerOptions.Builder envOverrideBuilder =
           SpannerOptions.newBuilder().setProjectId("test-proj");
-      BenchmarkApp.configureChannels(envOverrideBuilder, 6, 2, config, "8");
+      BenchmarkApp.configureChannels(envOverrideBuilder, config, "8");
       SpannerOptions envOptions = envOverrideBuilder.build();
       assertNotNull(envOptions.getGcpChannelPoolOptions());
-      assertEquals(2, envOptions.getGcpChannelPoolOptions().getMinSize());
+      assertEquals(1, envOptions.getGcpChannelPoolOptions().getMinSize());
       assertEquals(8, envOptions.getGcpChannelPoolOptions().getMaxSize());
     } finally {
       Files.deleteIfExists(yamlPath);

@@ -200,18 +200,6 @@ public class PerformanceAnalyzer {
     return "step-" + (zeroBasedIndex + 1);
   }
 
-  public static List<StepSpec> toStepSpecs(List<Duration> stepDurations) {
-    if (stepDurations == null || stepDurations.isEmpty()) {
-      throw new IllegalArgumentException(
-          "Step durations must be provided from step configuration (must not be null or empty)");
-    }
-    List<StepSpec> specs = new ArrayList<>(stepDurations.size());
-    for (int i = 0; i < stepDurations.size(); i++) {
-      specs.add(new StepSpec(defaultStepName(i), stepDurations.get(i)));
-    }
-    return specs;
-  }
-
   /**
    * Evaluates all verification gates for a benchmark run starting at {@code benchmarkStartTime}
    * using the configured {@code steps} and {@code postTestIdleDuration}.
@@ -243,9 +231,7 @@ public class PerformanceAnalyzer {
       double allowedDeltaUs,
       String instanceId,
       String databaseId,
-      String method,
-      Long overridePreHeapBytes,
-      Long overridePostHeapBytes) {
+      String method) {
     if (benchmarkStartTime == null) {
       throw new IllegalArgumentException("benchmarkStartTime is required");
     }
@@ -354,14 +340,8 @@ public class PerformanceAnalyzer {
           "Thread/lock contention detected: benchmark_latency > operation_latencies + 1ms while CPU < 30%");
     }
 
-    long preHeap =
-        overridePreHeapBytes != null
-            ? overridePreHeapBytes
-            : metricsService.fetchHeapBytes(fullInterval, "pre");
-    long postHeap =
-        overridePostHeapBytes != null
-            ? overridePostHeapBytes
-            : metricsService.fetchHeapBytes(fullInterval, "post");
+    long preHeap = metricsService.fetchHeapBytes(fullInterval, "pre");
+    long postHeap = metricsService.fetchHeapBytes(fullInterval, "post");
     if (preHeap <= 0 || postHeap <= 0) {
       failures.add("heap_after_gc returned no data; heap drift gate could not be evaluated");
     }
@@ -383,27 +363,6 @@ public class PerformanceAnalyzer {
         lockContention,
         heapLeak,
         failures);
-  }
-
-  public BenchmarkRunResult evaluateBenchmarkRun(
-      Instant benchmarkStartTime,
-      List<Duration> stepDurations,
-      double allowedDeltaUs,
-      String instanceId,
-      String databaseId,
-      String method,
-      Long overridePreHeapBytes,
-      Long overridePostHeapBytes) {
-    return evaluateBenchmarkRun(
-        benchmarkStartTime,
-        toStepSpecs(stepDurations),
-        Duration.ZERO,
-        allowedDeltaUs,
-        instanceId,
-        databaseId,
-        method,
-        overridePreHeapBytes,
-        overridePostHeapBytes);
   }
 
   private double getStepP90(TimeInterval interval, String stepName) {

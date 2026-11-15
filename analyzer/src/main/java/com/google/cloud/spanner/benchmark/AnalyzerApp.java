@@ -115,14 +115,9 @@ public class AnalyzerApp implements Callable<Integer> {
   @Option(
       names = {"--benchmark-start-time"},
       description =
-          "ISO-8601 start timestamp of benchmark run (requires measure_heap_leak: true"
-              + " metrics or --pre-heap-bytes/--post-heap-bytes overrides)")
+          "ISO-8601 start timestamp of benchmark run (requires --config YAML steps;"
+              + " the heap gate requires the run to use measure_heap_leak: true)")
   private String benchmarkStartTime;
-
-  @Option(
-      names = {"--step-durations"},
-      description = "Comma-separated step durations (derived from --config steps when omitted)")
-  private String stepDurations;
 
   @Option(
       names = {"--allowed-delta-us"},
@@ -145,16 +140,6 @@ public class AnalyzerApp implements Callable<Integer> {
       description = "Spanner RPC method filter for operation_latencies",
       defaultValue = "ExecuteStreamingSql")
   private String rpcMethod;
-
-  @Option(
-      names = {"--pre-heap-bytes"},
-      description = "Pre-test forced-GC heap bytes override")
-  private Long preHeapBytes;
-
-  @Option(
-      names = {"--post-heap-bytes"},
-      description = "Post-test forced-GC heap bytes override")
-  private Long postHeapBytes;
 
   private static MetricsService testingMetricsService;
   private MetricsService instanceMetricsService;
@@ -228,15 +213,7 @@ public class AnalyzerApp implements Callable<Integer> {
               : Duration.ZERO;
       PerformanceAnalyzer.BenchmarkRunResult result =
           analyzer.evaluateBenchmarkRun(
-              start,
-              steps,
-              idleDuration,
-              allowedDeltaUs,
-              instanceId,
-              databaseId,
-              rpcMethod,
-              preHeapBytes,
-              postHeapBytes);
+              start, steps, idleDuration, allowedDeltaUs, instanceId, databaseId, rpcMethod);
       if (!result.passed()) {
         for (String reason : result.failureReasons()) {
           System.err.println("ALERT: Benchmark run gate failure: " + reason);
@@ -367,36 +344,12 @@ public class AnalyzerApp implements Callable<Integer> {
   }
 
   private List<PerformanceAnalyzer.StepSpec> resolveSteps(BenchmarkConfig benchmarkConfig) {
-    if (stepDurations != null && !stepDurations.trim().isEmpty()) {
-      List<Duration> durations = parseStepDurations(stepDurations);
-      if (benchmarkConfig != null
-          && benchmarkConfig.steps() != null
-          && !benchmarkConfig.steps().isEmpty()) {
-        if (benchmarkConfig.steps().size() != durations.size()) {
-          throw new IllegalArgumentException(
-              "Step count in --step-durations ("
-                  + durations.size()
-                  + ") does not match --config YAML steps ("
-                  + benchmarkConfig.steps().size()
-                  + ")");
-        }
-        List<PerformanceAnalyzer.StepSpec> merged = new ArrayList<>(durations.size());
-        for (int i = 0; i < durations.size(); i++) {
-          merged.add(
-              new PerformanceAnalyzer.StepSpec(
-                  benchmarkConfig.steps().get(i).name(), durations.get(i)));
-        }
-        return merged;
-      }
-      return PerformanceAnalyzer.toStepSpecs(durations);
-    }
     if (benchmarkConfig != null
         && benchmarkConfig.steps() != null
         && !benchmarkConfig.steps().isEmpty()) {
       return benchmarkConfig.steps();
     }
-    throw new IllegalArgumentException(
-        "Step configuration is required via --config YAML 'steps' or --step-durations");
+    throw new IllegalArgumentException("Step configuration is required via --config YAML 'steps'");
   }
 
   @SuppressWarnings("unchecked")
@@ -458,19 +411,5 @@ public class AnalyzerApp implements Callable<Integer> {
       return Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1)));
     }
     return Duration.ofSeconds(Long.parseLong(s));
-  }
-
-  static List<Duration> parseStepDurations(String stepDurationsStr) {
-    List<Duration> list = new ArrayList<>();
-    if (stepDurationsStr == null || stepDurationsStr.trim().isEmpty()) {
-      return list;
-    }
-    for (String part : stepDurationsStr.split(",")) {
-      String s = part.trim();
-      if (!s.isEmpty()) {
-        list.add(parseSingleDuration(s));
-      }
-    }
-    return list;
   }
 }

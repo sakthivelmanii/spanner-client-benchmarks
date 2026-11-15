@@ -2,10 +2,16 @@ package com.google.cloud.spanner.benchmark;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import com.google.api.Distribution;
 import com.google.monitoring.v3.TimeInterval;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.After;
 import org.junit.Test;
 import picocli.CommandLine;
@@ -19,13 +25,15 @@ public class AnalyzerAppTest {
 
   @Test
   public void testHelpOption() {
-    CommandLine cmd = new CommandLine(new AnalyzerApp());
+    StringWriter out = new StringWriter();
+    CommandLine cmd = new CommandLine(new AnalyzerApp()).setOut(new PrintWriter(out));
     int exitCode = cmd.execute("--help");
     assertEquals(0, exitCode);
+    assertTrue(out.toString().contains("measure_heap_leak: true"));
   }
 
   @Test
-  public void testUnifiedProfileCliExitCodes() {
+  public void testUnifiedProfileCliExitCodes() throws Exception {
     Distribution.BucketOptions usOptions =
         Distribution.BucketOptions.newBuilder()
             .setExplicitBuckets(
@@ -56,6 +64,7 @@ public class AnalyzerAppTest {
             .addAllBucketCounts(List.of(10L, 80L, 10L, 0L))
             .build();
 
+    AtomicLong postHeapBytes = new AtomicLong(102_000_000L);
     MetricsService fakeService =
         new MetricsService(
             null, "my-proj", "point-select", "closed_loop", null, "java-client", false) {
@@ -79,59 +88,67 @@ public class AnalyzerAppTest {
           public long fetchErrorCount(TimeInterval interval) {
             return 0L;
           }
+
+          @Override
+          public long fetchHeapBytes(TimeInterval interval, String heapPhase) {
+            return "pre".equals(heapPhase) ? 100_000_000L : postHeapBytes.get();
+          }
         };
 
     AnalyzerApp.setTestingMetricsService(fakeService);
 
-    int passExit =
-        new CommandLine(new AnalyzerApp())
-            .execute(
-                "-p",
-                "my-proj",
-                "--benchmark-start-time",
-                "2026-11-15T00:00:00Z",
-                "--step-durations",
-                "5m,10m,5m,15m",
-                "--allowed-delta-us",
-                "500",
-                "--instance",
-                "inst-1",
-                "--database",
-                "db-1",
-                "--pre-heap-bytes",
-                "100000000",
-                "--post-heap-bytes",
-                "102000000");
-    assertEquals("Expected exit code 0 when benchmark run gates pass", 0, passExit);
+    Path yamlPath = Files.createTempFile("analyzer-cli-test", ".yaml");
+    try {
+      Files.writeString(
+          yamlPath,
+          "project: my-proj\n"
+              + "instance: inst-1\n"
+              + "database: db-1\n"
+              + "steps:\n"
+              + "  - { duration: 5m, concurrency: 50 }\n"
+              + "  - { duration: 10m, concurrency: 210 }\n"
+              + "  - { duration: 5m, concurrency: 300 }\n"
+              + "  - { duration: 15m, concurrency: 120 }\n");
 
-    int failExit =
-        new CommandLine(new AnalyzerApp())
-            .execute(
-                "-p",
-                "my-proj",
-                "--benchmark-start-time",
-                "2026-11-15T00:00:00Z",
-                "--step-durations",
-                "5m,10m,5m,15m",
-                "--allowed-delta-us",
-                "500",
-                "--instance",
-                "inst-1",
-                "--database",
-                "db-1",
-                "--pre-heap-bytes",
-                "100000000",
-                "--post-heap-bytes",
-                "120000000");
-    assertEquals("Expected exit code 2 when heap drift exceeds 5%", 2, failExit);
+      int passExit =
+          new CommandLine(new AnalyzerApp())
+              .execute(
+                  "--config",
+                  yamlPath.toString(),
+                  "--benchmark-start-time",
+                  "2026-11-15T00:00:00Z",
+                  "--allowed-delta-us",
+                  "500");
+      assertEquals("Expected exit code 0 when benchmark run gates pass", 0, passExit);
+
+      postHeapBytes.set(120_000_000L);
+      int failExit =
+          new CommandLine(new AnalyzerApp())
+              .execute(
+                  "--config",
+                  yamlPath.toString(),
+                  "--benchmark-start-time",
+                  "2026-11-15T00:00:00Z",
+                  "--allowed-delta-us",
+                  "500");
+      assertEquals("Expected exit code 2 when heap drift exceeds 5%", 2, failExit);
+    } finally {
+      Files.deleteIfExists(yamlPath);
+    }
   }
 
   @Test
   public void testDeprecatedUnifiedProfileOptionRemoved() {
-    int exit =
-        new CommandLine(new AnalyzerApp())
-            .execute("-p", "p", "--unified-profile-start", "2026-11-15T00:00:00Z");
-    assertEquals("unknown option must be a picocli usage error", 2, exit);
+    String[] removedCliFlags = {
+      "--unified-profile-start=2026-11-15T00:00:00Z",
+      "--step-durations=5m,10m",
+      "--pre-heap-bytes=100",
+      "--post-heap-bytes=100"
+    };
+    for (String flag : removedCliFlags) {
+      int exit = new CommandLine(new AnalyzerApp()).execute("-p", "p", flag);
+      assertEquals("unknown option " + flag + " must be a picocli usage error", 2, exit);
+    }
     for (java.lang.reflect.Method m : PerformanceAnalyzer.class.getMethods()) {
       assertFalse(m.getName().equals("evaluateUnifiedProfile"));
     }

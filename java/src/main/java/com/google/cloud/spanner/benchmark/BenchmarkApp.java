@@ -106,26 +106,6 @@ public class BenchmarkApp implements Runnable {
       defaultValue = "10s")
   private String resourceProbeInterval;
 
-  @Option(
-      names = {"--num-channels"},
-      description = "Maximum number of gRPC channels in the pool")
-  private Integer numChannels;
-
-  @Option(
-      names = {"--min-channels"},
-      description = "Minimum number of gRPC channels in the dynamic channel pool")
-  private Integer minChannels;
-
-  @Option(
-      names = {"--measure-heap-leak"},
-      description = "Record forced-GC heap before and after benchmark")
-  private Boolean measureHeapLeak;
-
-  @Option(
-      names = {"--post-test-idle-duration"},
-      description = "Idle wait duration before post-test heap measurement (e.g. 5m)")
-  private String postTestIdleDuration;
-
   public static final String METER_NAME = "spanner-benchmark";
   public static final String LATENCY_NAME = "spanner_client_benchmarks/latency";
   public static final String OPERATION_COUNT_NAME = "spanner_client_benchmarks/operation_count";
@@ -246,38 +226,6 @@ public class BenchmarkApp implements Runnable {
     this.resourceProbeInterval = resourceProbeInterval;
   }
 
-  public Integer getNumChannels() {
-    return numChannels;
-  }
-
-  public void setNumChannels(Integer numChannels) {
-    this.numChannels = numChannels;
-  }
-
-  public Integer getMinChannels() {
-    return minChannels;
-  }
-
-  public void setMinChannels(Integer minChannels) {
-    this.minChannels = minChannels;
-  }
-
-  public Boolean getMeasureHeapLeak() {
-    return measureHeapLeak;
-  }
-
-  public void setMeasureHeapLeak(Boolean measureHeapLeak) {
-    this.measureHeapLeak = measureHeapLeak;
-  }
-
-  public String getPostTestIdleDuration() {
-    return postTestIdleDuration;
-  }
-
-  public void setPostTestIdleDuration(String postTestIdleDuration) {
-    this.postTestIdleDuration = postTestIdleDuration;
-  }
-
   public static boolean hasMatchedOption(CommandSpec commandSpec, String optionName) {
     if (commandSpec == null
         || commandSpec.commandLine() == null
@@ -370,27 +318,6 @@ public class BenchmarkApp implements Runnable {
             resolvedConfig.getResourceProbeInterval());
     resolvedConfig.setResourceProbeInterval(this.resourceProbeInterval);
 
-    this.numChannels =
-        mergeOption(spec, "--num-channels", this.numChannels, resolvedConfig.getNumChannels());
-    resolvedConfig.setNumChannels(this.numChannels);
-
-    this.minChannels =
-        mergeOption(spec, "--min-channels", this.minChannels, resolvedConfig.getMinChannels());
-    resolvedConfig.setMinChannels(this.minChannels);
-
-    this.measureHeapLeak =
-        mergeOption(
-            spec, "--measure-heap-leak", this.measureHeapLeak, resolvedConfig.getMeasureHeapLeak());
-    resolvedConfig.setMeasureHeapLeak(this.measureHeapLeak);
-
-    this.postTestIdleDuration =
-        mergeOption(
-            spec,
-            "--post-test-idle-duration",
-            this.postTestIdleDuration,
-            resolvedConfig.getPostTestIdleDuration());
-    resolvedConfig.setPostTestIdleDuration(this.postTestIdleDuration);
-
     this.config = resolvedConfig;
     return resolvedConfig;
   }
@@ -406,18 +333,14 @@ public class BenchmarkApp implements Runnable {
   /**
    * Configures Spanner gRPC channel pool bounds on {@code builder}.
    *
-   * <p>Precedence: {@code SPANNER_NUM_CHANNELS} environment variable &gt; CLI {@code
-   * --num-channels} &gt; YAML {@code num_channels} (and CLI {@code --min-channels} &gt; YAML {@code
-   * min_channels}). When {@code minChannels} is specified, dynamic channel pooling is enabled via
-   * {@link SpannerOptions.Builder#enableDynamicChannelPool()} and {@link GcpChannelPoolOptions}
-   * without calling {@code setNumChannels} (which would disable dynamic pooling).
+   * <p>Precedence: {@code SPANNER_NUM_CHANNELS} environment variable &gt; YAML {@code num_channels}
+   * (with {@code min_channels} configured via YAML {@code BenchmarkConfig}). When {@code
+   * min_channels} is specified, dynamic channel pooling is enabled via {@link
+   * SpannerOptions.Builder#enableDynamicChannelPool()} and {@link GcpChannelPoolOptions} without
+   * calling {@code setNumChannels} (which would disable dynamic pooling).
    */
   public static void configureChannels(
-      SpannerOptions.Builder builder,
-      Integer cliNumChannels,
-      Integer cliMinChannels,
-      BenchmarkConfig yamlConfig,
-      String envNumChannels) {
+      SpannerOptions.Builder builder, BenchmarkConfig yamlConfig, String envNumChannels) {
     Integer resolvedMax = null;
     if (envNumChannels != null && !envNumChannels.trim().isEmpty()) {
       try {
@@ -426,17 +349,11 @@ public class BenchmarkApp implements Runnable {
         System.err.println("Invalid SPANNER_NUM_CHANNELS value: " + envNumChannels);
       }
     }
-    if (resolvedMax == null && cliNumChannels != null) {
-      resolvedMax = cliNumChannels;
-    }
     if (resolvedMax == null && yamlConfig != null && yamlConfig.getNumChannels() != null) {
       resolvedMax = yamlConfig.getNumChannels();
     }
 
-    Integer resolvedMin = cliMinChannels;
-    if (resolvedMin == null && yamlConfig != null && yamlConfig.getMinChannels() != null) {
-      resolvedMin = yamlConfig.getMinChannels();
-    }
+    Integer resolvedMin = yamlConfig != null ? yamlConfig.getMinChannels() : null;
 
     if (resolvedMin != null) {
       int maxChannels = resolvedMax != null ? resolvedMax : Math.max(resolvedMin, 4);

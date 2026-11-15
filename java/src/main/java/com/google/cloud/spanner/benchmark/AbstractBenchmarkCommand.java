@@ -42,26 +42,6 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
   protected String tableName;
 
   @Option(
-      names = {"--num-channels"},
-      description = "Maximum number of gRPC channels in the pool")
-  protected Integer numChannels;
-
-  @Option(
-      names = {"--min-channels"},
-      description = "Minimum number of gRPC channels in the dynamic channel pool")
-  protected Integer minChannels;
-
-  @Option(
-      names = {"--measure-heap-leak"},
-      description = "Record forced-GC heap before and after benchmark")
-  protected Boolean measureHeapLeak;
-
-  @Option(
-      names = {"--post-test-idle-duration"},
-      description = "Idle wait duration before post-test heap measurement (e.g. 5m)")
-  protected String postTestIdleDuration;
-
-  @Option(
       names = {"--num-rows"},
       description = "Number of rows to generate/select")
   protected long numRows = 1000000;
@@ -133,14 +113,6 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
     return loadType;
   }
 
-  public Integer getNumChannels() {
-    return numChannels;
-  }
-
-  public Integer getMinChannels() {
-    return minChannels;
-  }
-
   public BenchmarkApp getParent() {
     return parent;
   }
@@ -200,27 +172,6 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
         BenchmarkApp.mergeOption(
             spec, "--burst-fraction", this.burstFraction, config.getBurstFraction());
     config.setBurstFraction(this.burstFraction);
-
-    this.numChannels =
-        BenchmarkApp.mergeOption(spec, "--num-channels", this.numChannels, config.getNumChannels());
-    config.setNumChannels(this.numChannels);
-
-    this.minChannels =
-        BenchmarkApp.mergeOption(spec, "--min-channels", this.minChannels, config.getMinChannels());
-    config.setMinChannels(this.minChannels);
-
-    this.measureHeapLeak =
-        BenchmarkApp.mergeOption(
-            spec, "--measure-heap-leak", this.measureHeapLeak, config.getMeasureHeapLeak());
-    config.setMeasureHeapLeak(this.measureHeapLeak);
-
-    this.postTestIdleDuration =
-        BenchmarkApp.mergeOption(
-            spec,
-            "--post-test-idle-duration",
-            this.postTestIdleDuration,
-            config.getPostTestIdleDuration());
-    config.setPostTestIdleDuration(this.postTestIdleDuration);
 
     parent.validateConnection(spec);
     if (tableName == null || tableName.trim().isEmpty()) {
@@ -309,11 +260,7 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
         spannerOptionsBuilder.setCredentials(NoCredentials.getInstance());
       }
       BenchmarkApp.configureChannels(
-          spannerOptionsBuilder,
-          config.getNumChannels(),
-          config.getMinChannels(),
-          config,
-          System.getenv("SPANNER_NUM_CHANNELS"));
+          spannerOptionsBuilder, config, System.getenv("SPANNER_NUM_CHANNELS"));
       SpannerOptions spannerOptions = spannerOptionsBuilder.build();
       if (Boolean.TRUE.equals(spannerOptions.isEnableDirectAccess())
           || "true".equalsIgnoreCase(System.getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS"))) {

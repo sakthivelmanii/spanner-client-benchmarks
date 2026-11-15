@@ -217,9 +217,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
 
     assertTrue(
         "Benchmark run gates should pass when all phases are within thresholds: "
@@ -284,9 +282,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
 
     assertFalse(result.passed());
     assertTrue(result.lockContentionDetected());
@@ -323,9 +319,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
     assertTrue("Spike at exact baseline + delta should pass", exactDeltaPass.passed());
 
     metricsService.setStepDistribution("Phase 2", spikeAbove2501);
@@ -337,9 +331,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
     assertFalse("Spike above baseline + delta should fail", plusOneUsFail.passed());
     assertEquals(1, plusOneUsFail.failureReasons().size());
     assertTrue(plusOneUsFail.failureReasons().get(0).startsWith("Phase 2 spike"));
@@ -355,9 +347,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
     assertFalse("Recovery above baseline + delta should fail", onlyRecoveryFail.passed());
     assertEquals(1, onlyRecoveryFail.failureReasons().size());
     assertTrue(onlyRecoveryFail.failureReasons().get(0).startsWith("Phase 3b recovery"));
@@ -380,9 +370,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
     assertFalse("Spike >= 2x baseline should fail even if within delta", twoXFail.passed());
     assertEquals(1, twoXFail.failureReasons().size());
     assertTrue(twoXFail.failureReasons().get(0).startsWith("Phase 2 spike"));
@@ -401,15 +389,13 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
     assertFalse(missingOpLatency.passed());
     assertTrue(
         missingOpLatency.failureReasons().stream()
             .anyMatch(r -> r.startsWith("operation_latencies returned no data")));
 
-    // (d) Heap 0/0 with no override adds "heap_after_gc returned no data...".
+    // (d) Heap 0/0 adds "heap_after_gc returned no data...".
     metricsService.setOpLatencyDistributions(List.of(opLatencyMs));
     metricsService.setHeapBytes(0L, 0L);
     PerformanceAnalyzer.BenchmarkRunResult missingHeap =
@@ -420,9 +406,7 @@ public class PerformanceAnalyzerTest {
             500.0,
             "inst-1",
             "db-1",
-            "ExecuteStreamingSql",
-            null,
-            null);
+            "ExecuteStreamingSql");
     assertFalse(missingHeap.passed());
     assertTrue(
         missingHeap.failureReasons().stream()
@@ -438,9 +422,7 @@ public class PerformanceAnalyzerTest {
           500.0,
           "inst-1",
           "db-1",
-          "ExecuteStreamingSql",
-          100_000_000L,
-          102_000_000L);
+          "ExecuteStreamingSql");
     } catch (IllegalArgumentException expected) {
       threwOnOneStep = true;
     }

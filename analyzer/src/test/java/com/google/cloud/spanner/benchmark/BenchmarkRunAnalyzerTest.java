@@ -126,24 +126,22 @@ public class BenchmarkRunAnalyzerTest {
       Files.deleteIfExists(yamlPath);
     }
 
-    // Verify no fixed default step durations are assumed when neither --config nor --step-durations
-    // is passed.
+    // Verify no fixed default step durations are assumed when --config is omitted or has no steps.
     PerformanceAnalyzer analyzer =
         new PerformanceAnalyzer(
             fakeService, new RegressionReporter(null, "java-client", "point-select"));
     try {
       analyzer.evaluateBenchmarkRun(
           Instant.parse("2026-11-15T00:00:00Z"),
-          (List<Duration>) null,
+          null,
+          Duration.ZERO,
           500.0,
           "inst-1",
           "db-1",
-          "ExecuteStreamingSql",
-          null,
-          null);
-      fail("Expected IllegalArgumentException when step durations are not provided");
+          "ExecuteStreamingSql");
+      fail("Expected IllegalArgumentException when step configuration is not provided");
     } catch (IllegalArgumentException expected) {
-      assertTrue(expected.getMessage().contains("Step durations"));
+      assertTrue(expected.getMessage().contains("Step configuration"));
     }
   }
 
@@ -161,30 +159,14 @@ public class BenchmarkRunAnalyzerTest {
       MetricsService noopService =
           new MetricsService(null, "p", "point-select", null, null, "java-client", false);
       AnalyzerApp.setTestingMetricsService(noopService);
-      int mismatchExit =
+      int missingConfigExit =
           new CommandLine(new AnalyzerApp())
-              .execute(
-                  "--config",
-                  yaml.toString(),
-                  "--benchmark-start-time",
-                  "2026-11-15T00:00:00Z",
-                  "--step-durations",
-                  "5m,10m,5m");
-      assertEquals(1, mismatchExit);
+              .execute("-p", "p", "--benchmark-start-time", "2026-11-15T00:00:00Z");
+      assertEquals(1, missingConfigExit);
     } finally {
       AnalyzerApp.setTestingMetricsService(null);
       Files.deleteIfExists(yaml);
     }
-    assertEquals(
-        "step-1",
-        PerformanceAnalyzer.toStepSpecs(
-                List.of(
-                    Duration.ofMinutes(5),
-                    Duration.ofMinutes(10),
-                    Duration.ofMinutes(5),
-                    Duration.ofMinutes(15)))
-            .get(0)
-            .name());
 
     List<String> requested = new ArrayList<>();
     MetricsService fake =
@@ -193,6 +175,11 @@ public class BenchmarkRunAnalyzerTest {
           public List<Distribution> fetchStepDistributions(TimeInterval interval, String stepName) {
             requested.add(stepName);
             return List.of();
+          }
+
+          @Override
+          public long fetchHeapBytes(TimeInterval interval, String heapPhase) {
+            return 1L;
           }
         };
     new PerformanceAnalyzer(fake, null)
@@ -205,9 +192,7 @@ public class BenchmarkRunAnalyzerTest {
             500.0,
             null,
             null,
-            null,
-            1L,
-            1L);
+            null);
     assertEquals(List.of("step-1", "step-2"), requested);
   }
 }

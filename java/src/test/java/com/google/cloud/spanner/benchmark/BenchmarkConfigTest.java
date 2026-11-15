@@ -108,14 +108,7 @@ public class BenchmarkConfigTest {
             "--burst-duration",
             "2.0",
             "--burst-fraction",
-            "0.2",
-            "--num-channels",
-            "8",
-            "--min-channels",
-            "2",
-            "--measure-heap-leak",
-            "--post-test-idle-duration",
-            "1m");
+            "0.2");
     PointSelectCommand sub =
         (PointSelectCommand) parseResult.subcommand().commandSpec().userObject();
     BenchmarkConfig config = sub.applyYamlConfig();
@@ -139,10 +132,16 @@ public class BenchmarkConfigTest {
     assertEquals(Double.valueOf(3.0), config.getBurstFactor());
     assertEquals(Double.valueOf(2.0), config.getBurstDuration());
     assertEquals(Double.valueOf(0.2), config.getBurstFraction());
-    assertEquals(Integer.valueOf(8), config.getNumChannels());
-    assertEquals(Integer.valueOf(2), config.getMinChannels());
-    assertTrue(Boolean.TRUE.equals(config.getMeasureHeapLeak()));
-    assertEquals("1m", config.getPostTestIdleDuration());
+
+    String[] yamlOnlyCliFlags = {
+      "--num-channels=8", "--min-channels=2", "--measure-heap-leak", "--post-test-idle-duration=1m"
+    };
+    for (String flag : yamlOnlyCliFlags) {
+      int exit =
+          new CommandLine(new BenchmarkApp())
+              .execute("-p", "p", "-i", "i", "-d", "d", "point-select", "-t", "t", flag);
+      assertEquals("YAML-only option " + flag + " must not be accepted via CLI", 2, exit);
+    }
   }
 
   @Test
