@@ -2,13 +2,21 @@ package com.google.cloud.spanner.benchmark;
 
 import com.google.cloud.monitoring.v3.MetricServiceClient;
 import com.google.monitoring.v3.TimeInterval;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -22,9 +30,14 @@ import picocli.CommandLine.Option;
 public class AnalyzerApp implements Callable<Integer> {
 
   @Option(
+      names = {"--config"},
+      description = "Path to YAML benchmark configuration file containing steps and durations")
+  private String configPath;
+
+  @Option(
       names = {"-p", "--project"},
       description = "Google Cloud Project ID",
-      required = true)
+      required = false)
   private String projectId;
 
   @Option(
@@ -97,16 +110,22 @@ public class AnalyzerApp implements Callable<Integer> {
   private Integer listTimeSeriesDays;
 
   @Option(
-      names = {"--unified-profile-start"},
+      names = {"--benchmark-start-time"},
       description =
-          "ISO-8601 start timestamp of Unified Test Profile run (requires measure_heap_leak: true"
+          "ISO-8601 start timestamp of benchmark run (requires measure_heap_leak: true"
               + " metrics or --pre-heap-bytes/--post-heap-bytes overrides)")
-  private String unifiedProfileStart;
+  private String benchmarkStartTime;
+
+  @Option(
+      names = {"--unified-profile-start"},
+      hidden = true)
+  void setDeprecatedUnifiedProfileStart(String value) {
+    this.benchmarkStartTime = value;
+  }
 
   @Option(
       names = {"--step-durations"},
-      description = "Comma-separated step durations (default: 5m,10m,5m,15m)",
-      defaultValue = "5m,10m,5m,15m")
+      description = "Comma-separated step durations (derived from --config steps when omitted)")
   private String stepDurations;
 
   @Option(
@@ -159,14 +178,28 @@ public class AnalyzerApp implements Callable<Integer> {
 
   @Override
   public Integer call() {
+    YamlBenchmarkConfig yamlConfig = null;
+    if (configPath != null && !configPath.trim().isEmpty()) {
+      try {
+        yamlConfig = loadYamlConfig(Path.of(configPath.trim()));
+        applyYamlDefaults(yamlConfig);
+      } catch (Exception e) {
+        System.err.println("Failed to load YAML configuration: " + e.getMessage());
+        return 1;
+      }
+    }
+    if (projectId == null || projectId.trim().isEmpty()) {
+      System.err.println("Missing required option: '--project=<projectId>' (via CLI or --config)");
+      return 2;
+    }
     System.out.println("Analyzing baseline for project: " + projectId);
     MetricsService overrideService =
         instanceMetricsService != null ? instanceMetricsService : testingMetricsService;
     if (overrideService != null) {
-      return runAnalysisWithService(overrideService);
+      return runAnalysisWithService(overrideService, yamlConfig);
     }
     try (MetricServiceClient client = MetricServiceClient.create()) {
-      return runAnalysis(client);
+      return runAnalysis(client, yamlConfig);
     } catch (Exception e) {
       System.err.println("Analysis failed with an unhandled error: " + e.getMessage());
       e.printStackTrace();
@@ -174,25 +207,34 @@ public class AnalyzerApp implements Callable<Integer> {
     }
   }
 
-  private int runAnalysis(MetricServiceClient client) {
+  private int runAnalysis(MetricServiceClient client, YamlBenchmarkConfig yamlConfig) {
     MetricsService metricsService =
         new MetricsService(
             client, projectId, benchmarkType, loadType, tps, clientType, forAlerting);
-    return runAnalysisWithService(metricsService);
+    return runAnalysisWithService(metricsService, yamlConfig);
   }
 
   int runAnalysisWithService(MetricsService metricsService) {
+    return runAnalysisWithService(metricsService, null);
+  }
+
+  int runAnalysisWithService(MetricsService metricsService, YamlBenchmarkConfig yamlConfig) {
     RegressionReporter reporter =
         new RegressionReporter(summaryFilePath, clientType, benchmarkType);
     PerformanceAnalyzer analyzer = new PerformanceAnalyzer(metricsService, reporter);
 
-    if (unifiedProfileStart != null && !unifiedProfileStart.isEmpty()) {
-      Instant start = Instant.parse(unifiedProfileStart.trim());
-      List<Duration> durations = parseStepDurations(stepDurations);
-      PerformanceAnalyzer.UnifiedProfileResult result =
-          analyzer.evaluateUnifiedProfile(
+    if (benchmarkStartTime != null && !benchmarkStartTime.isEmpty()) {
+      Instant start = Instant.parse(benchmarkStartTime.trim());
+      List<PerformanceAnalyzer.StepSpec> steps = resolveSteps(yamlConfig);
+      Duration idleDuration =
+          yamlConfig != null && yamlConfig.postTestIdleDuration() != null
+              ? yamlConfig.postTestIdleDuration()
+              : Duration.ZERO;
+      PerformanceAnalyzer.BenchmarkRunResult result =
+          analyzer.evaluateBenchmarkRun(
               start,
-              durations,
+              steps,
+              idleDuration,
               allowedDeltaUs,
               instanceId,
               databaseId,
@@ -201,11 +243,11 @@ public class AnalyzerApp implements Callable<Integer> {
               postHeapBytes);
       if (!result.passed()) {
         for (String reason : result.failureReasons()) {
-          System.err.println("ALERT: Unified Profile gate failure: " + reason);
+          System.err.println("ALERT: Benchmark run gate failure: " + reason);
         }
         return 2;
       }
-      System.out.println("Unified Profile gates passed.");
+      System.out.println("Benchmark run gates passed.");
       return 0;
     }
 
@@ -304,6 +346,113 @@ public class AnalyzerApp implements Callable<Integer> {
 
   private record ComparisonBaseline(TimeInterval interval, String label) {}
 
+  record YamlBenchmarkConfig(
+      String project,
+      String instance,
+      String database,
+      String benchmarkType,
+      Duration postTestIdleDuration,
+      List<PerformanceAnalyzer.StepSpec> steps) {}
+
+  private void applyYamlDefaults(YamlBenchmarkConfig yamlConfig) {
+    if ((projectId == null || projectId.trim().isEmpty()) && yamlConfig.project() != null) {
+      projectId = yamlConfig.project();
+    }
+    if ((instanceId == null || instanceId.trim().isEmpty()) && yamlConfig.instance() != null) {
+      instanceId = yamlConfig.instance();
+    }
+    if ((databaseId == null || databaseId.trim().isEmpty()) && yamlConfig.database() != null) {
+      databaseId = yamlConfig.database();
+    }
+    if ((benchmarkType == null || benchmarkType.trim().isEmpty())
+        && yamlConfig.benchmarkType() != null) {
+      benchmarkType = yamlConfig.benchmarkType();
+    }
+  }
+
+  private List<PerformanceAnalyzer.StepSpec> resolveSteps(YamlBenchmarkConfig yamlConfig) {
+    if (stepDurations != null && !stepDurations.trim().isEmpty()) {
+      List<Duration> durations = parseStepDurations(stepDurations);
+      if (yamlConfig != null
+          && yamlConfig.steps() != null
+          && yamlConfig.steps().size() == durations.size()) {
+        List<PerformanceAnalyzer.StepSpec> merged = new ArrayList<>(durations.size());
+        for (int i = 0; i < durations.size(); i++) {
+          merged.add(
+              new PerformanceAnalyzer.StepSpec(yamlConfig.steps().get(i).name(), durations.get(i)));
+        }
+        return merged;
+      }
+      return PerformanceAnalyzer.toStepSpecs(durations);
+    }
+    if (yamlConfig != null && yamlConfig.steps() != null && !yamlConfig.steps().isEmpty()) {
+      return yamlConfig.steps();
+    }
+    throw new IllegalArgumentException(
+        "Step configuration is required via --config YAML 'steps' or --step-durations");
+  }
+
+  @SuppressWarnings("unchecked")
+  static YamlBenchmarkConfig loadYamlConfig(Path path) throws IOException {
+    String content = Files.readString(path, StandardCharsets.UTF_8);
+    Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
+    Object parsed = yaml.load(content);
+    if (!(parsed instanceof Map)) {
+      throw new IllegalArgumentException("YAML configuration root must be a mapping");
+    }
+    Map<String, Object> map = (Map<String, Object>) parsed;
+    String project = getString(map, "project", "project_id", "projectId");
+    String instance = getString(map, "instance", "instance_id", "instanceId");
+    String database = getString(map, "database", "database_id", "databaseId");
+    String benchmarkType = getString(map, "benchmark_type", "benchmarkType");
+    String idleStr = getString(map, "post_test_idle_duration", "postTestIdleDuration");
+    Duration idleDuration =
+        idleStr != null && !idleStr.trim().isEmpty() ? parseSingleDuration(idleStr) : Duration.ZERO;
+
+    List<PerformanceAnalyzer.StepSpec> steps = new ArrayList<>();
+    Object stepsObj = map.get("steps");
+    if (stepsObj instanceof List<?> rawList) {
+      for (int i = 0; i < rawList.size(); i++) {
+        Object item = rawList.get(i);
+        if (!(item instanceof Map)) {
+          throw new IllegalArgumentException("Each item in YAML 'steps' must be a mapping");
+        }
+        Map<String, Object> stepMap = (Map<String, Object>) item;
+        String name = getString(stepMap, "name", "step_name", "stepName");
+        if (name == null || name.trim().isEmpty()) {
+          name = "Step " + (i + 1);
+        }
+        String durationStr = getString(stepMap, "duration");
+        if (durationStr == null || durationStr.trim().isEmpty()) {
+          throw new IllegalArgumentException("Step '" + name + "' is missing required 'duration'");
+        }
+        steps.add(new PerformanceAnalyzer.StepSpec(name.trim(), parseSingleDuration(durationStr)));
+      }
+    }
+    return new YamlBenchmarkConfig(project, instance, database, benchmarkType, idleDuration, steps);
+  }
+
+  private static String getString(Map<String, Object> map, String... keys) {
+    for (String k : keys) {
+      if (map.containsKey(k) && map.get(k) != null) {
+        return String.valueOf(map.get(k));
+      }
+    }
+    return null;
+  }
+
+  static Duration parseSingleDuration(String raw) {
+    String s = raw.trim();
+    if (s.endsWith("s")) {
+      return Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1)));
+    } else if (s.endsWith("m")) {
+      return Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1)));
+    } else if (s.endsWith("h")) {
+      return Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1)));
+    }
+    return Duration.ofSeconds(Long.parseLong(s));
+  }
+
   static List<Duration> parseStepDurations(String stepDurationsStr) {
     List<Duration> list = new ArrayList<>();
     if (stepDurationsStr == null || stepDurationsStr.trim().isEmpty()) {
@@ -311,17 +460,8 @@ public class AnalyzerApp implements Callable<Integer> {
     }
     for (String part : stepDurationsStr.split(",")) {
       String s = part.trim();
-      if (s.isEmpty()) {
-        continue;
-      }
-      if (s.endsWith("s")) {
-        list.add(Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1))));
-      } else if (s.endsWith("m")) {
-        list.add(Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1))));
-      } else if (s.endsWith("h")) {
-        list.add(Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1))));
-      } else {
-        list.add(Duration.ofSeconds(Long.parseLong(s)));
+      if (!s.isEmpty()) {
+        list.add(parseSingleDuration(s));
       }
     }
     return list;

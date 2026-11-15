@@ -161,6 +161,23 @@ public class PerformanceAnalyzer {
     return dist.getMean();
   }
 
+  public record StepSpec(String name, Duration duration) {}
+
+  public record BenchmarkRunResult(
+      boolean passed,
+      double baselineP90Us,
+      double spikeP90Us,
+      double saturationP90Us,
+      double recoveryP90Us,
+      long totalErrors,
+      boolean lockContentionDetected,
+      boolean heapLeakDetected,
+      List<String> failureReasons) {}
+
+  /**
+   * @deprecated Use {@link BenchmarkRunResult} instead.
+   */
+  @Deprecated
   public record UnifiedProfileResult(
       boolean passed,
       double baselineP90Us,
@@ -192,107 +209,153 @@ public class PerformanceAnalyzer {
     return postHeapBytes > preHeapBytes * (1.0 + maxDriftRatio);
   }
 
+  public static List<StepSpec> toStepSpecs(List<Duration> stepDurations) {
+    if (stepDurations == null || stepDurations.isEmpty()) {
+      throw new IllegalArgumentException(
+          "Step durations must be provided from step configuration (must not be null or empty)");
+    }
+    List<StepSpec> specs = new ArrayList<>(stepDurations.size());
+    for (int i = 0; i < stepDurations.size(); i++) {
+      String defaultName;
+      if (stepDurations.size() == 4) {
+        defaultName =
+            switch (i) {
+              case 0 -> "Phase 1";
+              case 1 -> "Phase 2";
+              case 2 -> "Phase 3a";
+              default -> "Phase 3b";
+            };
+      } else {
+        defaultName = "Step " + (i + 1);
+      }
+      specs.add(new StepSpec(defaultName, stepDurations.get(i)));
+    }
+    return specs;
+  }
+
   /**
-   * Evaluates all verification gates for the 35-minute Unified Test Profile.
+   * Evaluates all verification gates for a benchmark run starting at {@code benchmarkStartTime}
+   * using the configured {@code steps} and {@code postTestIdleDuration}.
    *
-   * <p>Time windows are derived sequentially from {@code profileStart} using the 4 durations in
-   * {@code stepDurations} (Phase 1 warmup/baseline, Phase 2 spike, Phase 3a saturation, Phase 3b
-   * recovery). Step latencies are evaluated in microseconds ({@code us}); Spanner built-in {@code
+   * <p>Time windows are derived sequentially from {@code benchmarkStartTime} using the step names
+   * and durations in {@code steps} without assuming fixed step durations or idle windows. Step
+   * latencies are evaluated in microseconds ({@code us}); Spanner built-in {@code
    * operation_latencies} are recorded in milliseconds ({@code ms}) and converted to {@code us} via
    * {@code * 1000.0} before comparing against {@code benchmark_latency}.
    */
-  public UnifiedProfileResult evaluateUnifiedProfile(
-      Instant profileStart,
-      List<Duration> stepDurations,
+  public BenchmarkRunResult evaluateBenchmarkRun(
+      Instant benchmarkStartTime,
+      List<StepSpec> steps,
+      Duration postTestIdleDuration,
       double allowedDeltaUs,
       String instanceId,
       String databaseId,
       String method,
       Long overridePreHeapBytes,
       Long overridePostHeapBytes) {
-    List<Duration> durations;
-    if (stepDurations == null) {
-      durations =
-          List.of(
-              Duration.ofMinutes(5),
-              Duration.ofMinutes(10),
-              Duration.ofMinutes(5),
-              Duration.ofMinutes(15));
-    } else if (stepDurations.size() != 4) {
+    if (benchmarkStartTime == null) {
+      throw new IllegalArgumentException("benchmarkStartTime is required");
+    }
+    if (steps == null || steps.size() < 2) {
       throw new IllegalArgumentException(
-          "Unified profile requires exactly 4 step durations (Phase 1, Phase 2, Phase 3a, Phase 3b)");
-    } else {
-      durations = stepDurations;
+          "Step configuration must contain at least 2 steps (got "
+              + (steps == null ? 0 : steps.size())
+              + ")");
     }
 
-    Instant t0 = profileStart != null ? profileStart : Instant.now().minus(Duration.ofMinutes(35));
-    Instant t1 = t0.plus(durations.get(0));
-    Instant t2 = t1.plus(durations.get(1));
-    Instant t3 = t2.plus(durations.get(2));
-    Instant t4 = t3.plus(durations.get(3));
+    Instant cursor = benchmarkStartTime;
+    List<TimeInterval> intervals = new ArrayList<>(steps.size());
+    List<String> stepNames = new ArrayList<>(steps.size());
+    List<Double> stepP90s = new ArrayList<>(steps.size());
 
-    TimeInterval phase1 = buildInterval(t0, t1);
-    TimeInterval phase2 = buildInterval(t1, t2);
-    TimeInterval phase3a = buildInterval(t2, t3);
-    TimeInterval phase3b = buildInterval(t3, t4);
-    TimeInterval fullInterval = buildInterval(t0, t4.plus(Duration.ofMinutes(5)));
+    for (int i = 0; i < steps.size(); i++) {
+      StepSpec step = steps.get(i);
+      if (step == null
+          || step.duration() == null
+          || step.duration().isZero()
+          || step.duration().isNegative()) {
+        throw new IllegalArgumentException("Step " + (i + 1) + " must have a positive duration");
+      }
+      String name =
+          step.name() != null && !step.name().trim().isEmpty()
+              ? step.name().trim()
+              : "Step " + (i + 1);
+      Instant next = cursor.plus(step.duration());
+      TimeInterval interval = buildInterval(cursor, next);
+      intervals.add(interval);
+      stepNames.add(name);
+      stepP90s.add(getStepP90(interval, name));
+      cursor = next;
+    }
 
-    double baselineP90Us = getStepP90(phase1, "Phase 1");
-    double spikeP90Us = getStepP90(phase2, "Phase 2");
-    double saturationP90Us = getStepP90(phase3a, "Phase 3a");
-    double recoveryP90Us = getStepP90(phase3b, "Phase 3b");
+    Duration idle =
+        postTestIdleDuration != null && !postTestIdleDuration.isNegative()
+            ? postTestIdleDuration
+            : Duration.ZERO;
+    TimeInterval fullInterval = buildInterval(benchmarkStartTime, cursor.plus(idle));
+
+    double baselineP90Us = stepP90s.get(0);
+    double spikeP90Us = stepP90s.get(1);
+    double saturationP90Us = steps.size() >= 3 ? stepP90s.get(steps.size() - 2) : spikeP90Us;
+    double recoveryP90Us = steps.size() >= 3 ? stepP90s.get(steps.size() - 1) : baselineP90Us;
+
+    String baselineName = stepNames.get(0);
+    String spikeName = stepNames.get(1);
+    String recoveryName = stepNames.get(steps.size() - 1);
 
     List<String> failures = new ArrayList<>();
     if (baselineP90Us <= 0) {
-      failures.add("Phase 1 baseline P90 could not be computed");
+      failures.add(baselineName + " baseline P90 could not be computed");
     } else {
       if (spikeP90Us <= 0
           || spikeP90Us > baselineP90Us + allowedDeltaUs
           || spikeP90Us >= 2.0 * baselineP90Us) {
         failures.add(
             String.format(
-                "Phase 2 spike P90 (%.2f us) exceeded allowed threshold (baseline=%.2f us, delta=%.2f us)",
-                spikeP90Us, baselineP90Us, allowedDeltaUs));
+                "%s spike P90 (%.2f us) exceeded allowed threshold (baseline=%.2f us, delta=%.2f us)",
+                spikeName, spikeP90Us, baselineP90Us, allowedDeltaUs));
       }
-      if (recoveryP90Us <= 0 || recoveryP90Us > baselineP90Us + allowedDeltaUs) {
+      if (steps.size() >= 3
+          && (recoveryP90Us <= 0 || recoveryP90Us > baselineP90Us + allowedDeltaUs)) {
         failures.add(
             String.format(
-                "Phase 3b recovery P90 (%.2f us) failed to return within baseline + delta (%.2f us)",
-                recoveryP90Us, baselineP90Us + allowedDeltaUs));
+                "%s recovery P90 (%.2f us) failed to return within baseline + delta (%.2f us)",
+                recoveryName, recoveryP90Us, baselineP90Us + allowedDeltaUs));
       }
     }
 
     long totalErrors = metricsService.fetchErrorCount(fullInterval);
     if (totalErrors > 0) {
-      failures.add("Non-zero error count detected during Unified Profile run: " + totalErrors);
+      failures.add("Non-zero error count detected during benchmark run: " + totalErrors);
     }
 
-    double opLatencyPhase2Us =
-        computeListPercentile(
-                metricsService.fetchOperationLatencyDistributions(
-                    phase2, instanceId, databaseId, method),
-                90)
-            * 1000.0;
-    double opLatencyPhase3aUs =
-        computeListPercentile(
-                metricsService.fetchOperationLatencyDistributions(
-                    phase3a, instanceId, databaseId, method),
-                90)
-            * 1000.0;
-    if (instanceId != null
-        && !instanceId.isEmpty()
-        && databaseId != null
-        && !databaseId.isEmpty()
-        && (opLatencyPhase2Us <= 0 || opLatencyPhase3aUs <= 0)) {
+    int lastContentionIdx = Math.max(1, steps.size() - 2);
+    boolean missingOpLatency = false;
+    boolean lockContention = false;
+    for (int i = 1; i <= lastContentionIdx; i++) {
+      TimeInterval stepInterval = intervals.get(i);
+      double opLatencyUs =
+          computeListPercentile(
+                  metricsService.fetchOperationLatencyDistributions(
+                      stepInterval, instanceId, databaseId, method),
+                  90)
+              * 1000.0;
+      if (instanceId != null
+          && !instanceId.isEmpty()
+          && databaseId != null
+          && !databaseId.isEmpty()
+          && opLatencyUs <= 0) {
+        missingOpLatency = true;
+      }
+      double cpuP90 = metricsService.fetchCpuUtilizationP90(stepInterval);
+      if (evaluateLockContention(stepP90s.get(i), opLatencyUs, 1000.0, cpuP90)) {
+        lockContention = true;
+      }
+    }
+    if (missingOpLatency) {
       failures.add(
           "operation_latencies returned no data; lock contention gate could not be evaluated");
     }
-    double cpuPhase2 = metricsService.fetchCpuUtilizationP90(phase2);
-    double cpuPhase3a = metricsService.fetchCpuUtilizationP90(phase3a);
-
-    boolean lockContention =
-        evaluateLockContention(spikeP90Us, opLatencyPhase2Us, 1000.0, cpuPhase2)
-            || evaluateLockContention(saturationP90Us, opLatencyPhase3aUs, 1000.0, cpuPhase3a);
     if (lockContention) {
       failures.add(
           "Thread/lock contention detected: benchmark_latency > operation_latencies + 1ms while CPU < 30%");
@@ -317,7 +380,7 @@ public class PerformanceAnalyzer {
               preHeap, postHeap));
     }
 
-    return new UnifiedProfileResult(
+    return new BenchmarkRunResult(
         failures.isEmpty(),
         baselineP90Us,
         spikeP90Us,
@@ -327,6 +390,67 @@ public class PerformanceAnalyzer {
         lockContention,
         heapLeak,
         failures);
+  }
+
+  public BenchmarkRunResult evaluateBenchmarkRun(
+      Instant benchmarkStartTime,
+      List<Duration> stepDurations,
+      double allowedDeltaUs,
+      String instanceId,
+      String databaseId,
+      String method,
+      Long overridePreHeapBytes,
+      Long overridePostHeapBytes) {
+    return evaluateBenchmarkRun(
+        benchmarkStartTime,
+        toStepSpecs(stepDurations),
+        Duration.ZERO,
+        allowedDeltaUs,
+        instanceId,
+        databaseId,
+        method,
+        overridePreHeapBytes,
+        overridePostHeapBytes);
+  }
+
+  /**
+   * @deprecated Use {@link #evaluateBenchmarkRun} instead.
+   */
+  @Deprecated
+  public UnifiedProfileResult evaluateUnifiedProfile(
+      Instant profileStart,
+      List<Duration> stepDurations,
+      double allowedDeltaUs,
+      String instanceId,
+      String databaseId,
+      String method,
+      Long overridePreHeapBytes,
+      Long overridePostHeapBytes) {
+    if (stepDurations == null || stepDurations.size() != 4) {
+      throw new IllegalArgumentException(
+          "Step configuration requires 4 step durations (Phase 1, Phase 2, Phase 3a, Phase 3b)");
+    }
+    BenchmarkRunResult res =
+        evaluateBenchmarkRun(
+            profileStart,
+            toStepSpecs(stepDurations),
+            Duration.ZERO,
+            allowedDeltaUs,
+            instanceId,
+            databaseId,
+            method,
+            overridePreHeapBytes,
+            overridePostHeapBytes);
+    return new UnifiedProfileResult(
+        res.passed(),
+        res.baselineP90Us(),
+        res.spikeP90Us(),
+        res.saturationP90Us(),
+        res.recoveryP90Us(),
+        res.totalErrors(),
+        res.lockContentionDetected(),
+        res.heapLeakDetected(),
+        res.failureReasons());
   }
 
   private double getStepP90(TimeInterval interval, String stepName) {
