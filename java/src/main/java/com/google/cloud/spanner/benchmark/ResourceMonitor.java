@@ -3,6 +3,9 @@ package com.google.cloud.spanner.benchmark;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.LongHistogram;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.OperatingSystemMXBean;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -51,13 +54,11 @@ public class ResourceMonitor {
 
   private void probeResourceUsage() {
     try {
-      long usedMemory =
-          java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+      long usedMemory = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
       if (memoryUsageHistogram != null) {
         memoryUsageHistogram.record(usedMemory, attributes);
       }
-      java.lang.management.OperatingSystemMXBean osBean =
-          java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+      OperatingSystemMXBean osBean = ManagementFactory.getOperatingSystemMXBean();
       if (osBean instanceof com.sun.management.OperatingSystemMXBean) {
         double cpuLoad = ((com.sun.management.OperatingSystemMXBean) osBean).getProcessCpuLoad();
         if (cpuLoad >= 0 && cpuUtilizationHistogram != null) {
@@ -67,5 +68,28 @@ public class ResourceMonitor {
     } catch (Exception e) {
       // Ignore exceptions in resource monitoring
     }
+  }
+
+  public static long measureForceGcHeapUsedBytes() {
+    MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+    for (int i = 0; i < 3; i++) {
+      memoryBean.gc();
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    long used = memoryBean.getHeapMemoryUsage().getUsed();
+    return Math.max(1L, used);
+  }
+
+  public static boolean isHeapDriftWithinThreshold(
+      long preHeapBytes, long postHeapBytes, double maxDriftRatio) {
+    if (preHeapBytes <= 0 || postHeapBytes < 0 || maxDriftRatio < 0) {
+      return false;
+    }
+    return postHeapBytes <= preHeapBytes * (1.0 + maxDriftRatio);
   }
 }

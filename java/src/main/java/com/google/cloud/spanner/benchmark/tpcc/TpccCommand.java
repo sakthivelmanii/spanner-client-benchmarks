@@ -16,15 +16,24 @@ import com.google.cloud.spanner.benchmark.MockServerUtil;
 import io.grpc.Server;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.metrics.Meter;
+import java.io.IOException;
 import java.time.Duration;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.ParentCommand;
+import picocli.CommandLine.Spec;
 
 @Command(name = "tpcc", description = "Runs closed-loop TPC-C benchmark against Spanner.")
 public class TpccCommand implements Runnable {
 
   @ParentCommand private BenchmarkApp parent;
+  @Spec private CommandSpec spec;
+
+  @Option(
+      names = {"-c", "--config"},
+      description = "Path to YAML benchmark configuration file")
+  private String configPath;
 
   @Option(
       names = {"--warehouses"},
@@ -50,29 +59,68 @@ public class TpccCommand implements Runnable {
       defaultValue = "false")
   private boolean extended;
 
+  public BenchmarkApp.BenchmarkConfig applyYamlConfig() throws IOException {
+    BenchmarkApp.BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
+    if (!BenchmarkApp.hasMatchedOption(spec, "--warehouses") && config.getWarehouses() != null) {
+      this.warehouses = config.getWarehouses();
+    }
+    config.setWarehouses(this.warehouses);
+
+    if (!BenchmarkApp.hasMatchedOption(spec, "--clients") && config.getClients() != null) {
+      this.clients = config.getClients();
+    }
+    config.setClients(this.clients);
+
+    if (!BenchmarkApp.hasMatchedOption(spec, "--items") && config.getItems() != null) {
+      this.items = config.getItems();
+    }
+    config.setItems(this.items);
+
+    if (!BenchmarkApp.hasMatchedOption(spec, "--extended") && config.getExtended() != null) {
+      this.extended = config.getExtended();
+    }
+    config.setExtended(this.extended);
+
+    parent.validateConnection(spec);
+    return config;
+  }
+
   @Override
   public void run() {
+    BenchmarkApp.BenchmarkConfig config;
+    try {
+      config = applyYamlConfig();
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to load YAML configuration", e);
+    }
+
     Server server = null;
-    if (parent.isMock()) {
+    if (Boolean.TRUE.equals(config.getMock())) {
       server = MockServerUtil.startMockSpannerServer(parent, null);
     }
     try {
       OpenTelemetry openTelemetry =
           BenchmarkApp.initializeOpenTelemetry(
-              parent.getProjectId(),
-              parent.getHost(),
-              parent.getBenchmarkName(),
-              parent.isNoMetrics());
+              config.getProject(),
+              config.getHost(),
+              config.getBenchmarkName(),
+              Boolean.TRUE.equals(config.getNoMetrics()));
       Meter meter = openTelemetry.getMeter(METER_NAME);
       BenchmarkMetrics metrics = BenchmarkApp.createBenchmarkMetrics(meter, LATENCY_NAME);
 
       SpannerOptions.Builder spannerOptionsBuilder =
-          SpannerOptions.newBuilder().setProjectId(parent.getProjectId());
-      if (parent.getHost() != null) {
-        spannerOptionsBuilder.setHost(parent.getHost());
+          SpannerOptions.newBuilder().setProjectId(config.getProject());
+      if (config.getHost() != null) {
+        spannerOptionsBuilder.setHost(config.getHost());
         spannerOptionsBuilder.setChannelConfigurator(builder -> builder.usePlaintext());
         spannerOptionsBuilder.setCredentials(NoCredentials.getInstance());
       }
+      BenchmarkApp.configureChannels(
+          spannerOptionsBuilder,
+          config.getNumChannels(),
+          config.getMinChannels(),
+          config,
+          System.getenv("SPANNER_NUM_CHANNELS"));
       SpannerOptions spannerOptions = spannerOptionsBuilder.build();
       if (Boolean.TRUE.equals(spannerOptions.isEnableDirectAccess())
           || "true".equalsIgnoreCase(System.getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS"))) {
@@ -81,13 +129,13 @@ public class TpccCommand implements Runnable {
       }
       try (Spanner spanner = spannerOptions.getService()) {
         DatabaseId databaseId =
-            DatabaseId.of(parent.getProjectId(), parent.getInstanceId(), parent.getDatabaseId());
+            DatabaseId.of(config.getProject(), config.getInstance(), config.getDatabase());
         DatabaseClient client = spanner.getDatabaseClient(databaseId);
         BatchClient batchClient = spanner.getBatchClient(databaseId);
 
-        Duration duration = AbstractBenchmark.parseDuration(parent.getDuration());
-        boolean forAlerting = parent.isForAlerting();
-        String benchmarkName = parent.getBenchmarkName();
+        Duration duration = AbstractBenchmark.parseDuration(config.getDuration());
+        boolean forAlerting = Boolean.TRUE.equals(config.getForAlerting());
+        String benchmarkName = config.getBenchmarkName();
 
         TpccBenchmark benchmark =
             new TpccBenchmark(
@@ -98,19 +146,20 @@ public class TpccCommand implements Runnable {
                 metrics.errorCounter,
                 metrics.memoryUsageHistogram,
                 metrics.cpuUtilizationHistogram,
-                parent.getResourceProbeInterval(),
-                warehouses,
-                clients,
-                items,
+                config.getResourceProbeInterval(),
+                config.getWarehouses(),
+                config.getClients(),
+                config.getItems(),
                 duration,
                 forAlerting,
                 benchmarkName,
-                extended);
+                Boolean.TRUE.equals(config.getExtended()));
         benchmark.run();
       }
     } catch (Exception e) {
       e.printStackTrace();
     } finally {
+      BenchmarkApp.flushAndCloseOpenTelemetry();
       if (server != null) {
         server.shutdown();
       }

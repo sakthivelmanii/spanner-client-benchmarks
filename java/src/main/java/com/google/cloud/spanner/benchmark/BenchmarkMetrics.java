@@ -10,6 +10,7 @@ public class BenchmarkMetrics {
   public final LongCounter errorCounter;
   public final LongHistogram memoryUsageHistogram;
   public final DoubleHistogram cpuUtilizationHistogram;
+  public final LongHistogram heapAfterGcHistogram;
 
   public BenchmarkMetrics(
       LongHistogram latencyHistogram,
@@ -17,10 +18,27 @@ public class BenchmarkMetrics {
       LongCounter errorCounter,
       LongHistogram memoryUsageHistogram,
       DoubleHistogram cpuUtilizationHistogram) {
+    this(
+        latencyHistogram,
+        operationCounter,
+        errorCounter,
+        memoryUsageHistogram,
+        cpuUtilizationHistogram,
+        null);
+  }
+
+  public BenchmarkMetrics(
+      LongHistogram latencyHistogram,
+      LongCounter operationCounter,
+      LongCounter errorCounter,
+      LongHistogram memoryUsageHistogram,
+      DoubleHistogram cpuUtilizationHistogram,
+      LongHistogram heapAfterGcHistogram) {
     this.latencyHistogram = latencyHistogram;
     this.operationCounter = operationCounter;
     this.errorCounter = errorCounter;
     this.memoryUsageHistogram = memoryUsageHistogram;
     this.cpuUtilizationHistogram = cpuUtilizationHistogram;
+    this.heapAfterGcHistogram = heapAfterGcHistogram;
   }
 }

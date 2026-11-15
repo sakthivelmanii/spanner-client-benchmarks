@@ -2,6 +2,7 @@ package com.google.cloud.spanner.benchmark;
 
 import com.google.cloud.monitoring.v3.MetricServiceClient;
 import com.google.monitoring.v3.TimeInterval;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -95,6 +96,62 @@ public class AnalyzerApp implements Callable<Integer> {
       description = "List metadata of all timeseries available in the last N days.")
   private Integer listTimeSeriesDays;
 
+  @Option(
+      names = {"--unified-profile-start"},
+      description =
+          "ISO-8601 start timestamp of Unified Test Profile run (requires measure_heap_leak: true"
+              + " metrics or --pre-heap-bytes/--post-heap-bytes overrides)")
+  private String unifiedProfileStart;
+
+  @Option(
+      names = {"--step-durations"},
+      description = "Comma-separated step durations (default: 5m,10m,5m,15m)",
+      defaultValue = "5m,10m,5m,15m")
+  private String stepDurations;
+
+  @Option(
+      names = {"--allowed-delta-us"},
+      description = "Allowed P90 latency delta above baseline in microseconds",
+      defaultValue = "500.0")
+  private double allowedDeltaUs;
+
+  @Option(
+      names = {"--instance"},
+      description = "Spanner Instance ID for operation_latencies filter")
+  private String instanceId;
+
+  @Option(
+      names = {"--database"},
+      description = "Spanner Database ID for operation_latencies filter")
+  private String databaseId;
+
+  @Option(
+      names = {"--rpc-method"},
+      description = "Spanner RPC method filter for operation_latencies",
+      defaultValue = "ExecuteStreamingSql")
+  private String rpcMethod;
+
+  @Option(
+      names = {"--pre-heap-bytes"},
+      description = "Pre-test forced-GC heap bytes override")
+  private Long preHeapBytes;
+
+  @Option(
+      names = {"--post-heap-bytes"},
+      description = "Post-test forced-GC heap bytes override")
+  private Long postHeapBytes;
+
+  private static MetricsService testingMetricsService;
+  private MetricsService instanceMetricsService;
+
+  public static void setTestingMetricsService(MetricsService service) {
+    testingMetricsService = service;
+  }
+
+  void setMetricsServiceForTesting(MetricsService service) {
+    this.instanceMetricsService = service;
+  }
+
   public static void main(String[] args) {
     int exitCode = new CommandLine(new AnalyzerApp()).execute(args);
     System.exit(exitCode);
@@ -103,6 +160,11 @@ public class AnalyzerApp implements Callable<Integer> {
   @Override
   public Integer call() {
     System.out.println("Analyzing baseline for project: " + projectId);
+    MetricsService overrideService =
+        instanceMetricsService != null ? instanceMetricsService : testingMetricsService;
+    if (overrideService != null) {
+      return runAnalysisWithService(overrideService);
+    }
     try (MetricServiceClient client = MetricServiceClient.create()) {
       return runAnalysis(client);
     } catch (Exception e) {
@@ -116,9 +178,36 @@ public class AnalyzerApp implements Callable<Integer> {
     MetricsService metricsService =
         new MetricsService(
             client, projectId, benchmarkType, loadType, tps, clientType, forAlerting);
+    return runAnalysisWithService(metricsService);
+  }
+
+  int runAnalysisWithService(MetricsService metricsService) {
     RegressionReporter reporter =
         new RegressionReporter(summaryFilePath, clientType, benchmarkType);
     PerformanceAnalyzer analyzer = new PerformanceAnalyzer(metricsService, reporter);
+
+    if (unifiedProfileStart != null && !unifiedProfileStart.isEmpty()) {
+      Instant start = Instant.parse(unifiedProfileStart.trim());
+      List<Duration> durations = parseStepDurations(stepDurations);
+      PerformanceAnalyzer.UnifiedProfileResult result =
+          analyzer.evaluateUnifiedProfile(
+              start,
+              durations,
+              allowedDeltaUs,
+              instanceId,
+              databaseId,
+              rpcMethod,
+              preHeapBytes,
+              postHeapBytes);
+      if (!result.passed()) {
+        for (String reason : result.failureReasons()) {
+          System.err.println("ALERT: Unified Profile gate failure: " + reason);
+        }
+        return 2;
+      }
+      System.out.println("Unified Profile gates passed.");
+      return 0;
+    }
 
     if (listTimeSeriesDays != null) {
       metricsService.listTimeSeries(listTimeSeriesDays);
@@ -214,4 +303,27 @@ public class AnalyzerApp implements Callable<Integer> {
   }
 
   private record ComparisonBaseline(TimeInterval interval, String label) {}
+
+  static List<Duration> parseStepDurations(String stepDurationsStr) {
+    List<Duration> list = new ArrayList<>();
+    if (stepDurationsStr == null || stepDurationsStr.trim().isEmpty()) {
+      return list;
+    }
+    for (String part : stepDurationsStr.split(",")) {
+      String s = part.trim();
+      if (s.isEmpty()) {
+        continue;
+      }
+      if (s.endsWith("s")) {
+        list.add(Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1))));
+      } else if (s.endsWith("m")) {
+        list.add(Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1))));
+      } else if (s.endsWith("h")) {
+        list.add(Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1))));
+      } else {
+        list.add(Duration.ofSeconds(Long.parseLong(s)));
+      }
+    }
+    return list;
+  }
 }

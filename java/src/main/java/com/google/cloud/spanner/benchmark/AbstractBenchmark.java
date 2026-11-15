@@ -10,6 +10,9 @@ import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -41,6 +44,16 @@ public abstract class AbstractBenchmark {
   protected final String resourceProbeInterval;
   private ResourceMonitor resourceMonitor;
   private SocketChannel socketChannel = null;
+  private List<BenchmarkConfig.WorkloadStep> steps = Collections.emptyList();
+  private LongHistogram heapAfterGcHistogram;
+  private boolean measureHeapLeak;
+  private Duration postTestIdleDuration;
+  private volatile String currentStepName;
+  private volatile Attributes currentStepAttributes;
+  private volatile int activeConcurrency;
+  private final Object concurrencyLock = new Object();
+  private long preTestHeapBytes = -1L;
+  private long postTestHeapBytes = -1L;
 
   public AbstractBenchmark(
       DatabaseClient client,
@@ -113,17 +126,61 @@ public abstract class AbstractBenchmark {
 
   @Nonnull
   protected Attributes getAttributes() {
-    return this.attributes;
+    // Why: return precomputed per-step Attributes so 300-CR hot-path operations do not allocate
+    // AttributesBuilder instances on every latency/operation/error record.
+    Attributes stepAttrs = this.currentStepAttributes;
+    return stepAttrs != null ? stepAttrs : this.attributes;
+  }
+
+  public void configureSteps(
+      List<BenchmarkConfig.WorkloadStep> steps,
+      LongHistogram heapAfterGcHistogram,
+      boolean measureHeapLeak,
+      Duration postTestIdleDuration) {
+    this.steps = steps != null ? steps : Collections.emptyList();
+    this.heapAfterGcHistogram = heapAfterGcHistogram;
+    this.measureHeapLeak = measureHeapLeak;
+    this.postTestIdleDuration = postTestIdleDuration;
+  }
+
+  public List<BenchmarkConfig.WorkloadStep> getSteps() {
+    return steps;
+  }
+
+  public long getPreTestHeapBytes() {
+    return preTestHeapBytes;
+  }
+
+  public long getPostTestHeapBytes() {
+    return postTestHeapBytes;
+  }
+
+  public int getActiveConcurrency() {
+    return activeConcurrency;
+  }
+
+  public String getCurrentStepName() {
+    return currentStepName;
   }
 
   public void run() throws Exception {
     System.out.println(
         "Starting " + getBenchmarkName() + " with TPS: " + tps + ", threads: " + threads);
+    String socketPath = System.getenv("SPANNER_BENCHMARK_SOCKET");
+    if (steps != null && !steps.isEmpty() && socketPath != null && !socketPath.isEmpty()) {
+      throw new IllegalArgumentException(
+          "Multi-step YAML execution is not supported with SPANNER_BENCHMARK_SOCKET sidecar mode");
+    }
+
     ExecutorService executor = Executors.newFixedThreadPool(threads);
 
     startResourceMonitoring();
 
-    String socketPath = System.getenv("SPANNER_BENCHMARK_SOCKET");
+    if (steps != null && !steps.isEmpty()) {
+      runMultiStep(executor);
+      return;
+    }
+
     Thread generatorThread;
     if (socketPath != null && !socketPath.isEmpty()) {
       generatorThread =
@@ -164,6 +221,172 @@ public abstract class AbstractBenchmark {
         resourceMonitor.stop();
       }
       executor.shutdownNow();
+    }
+  }
+
+  /**
+   * Executes a multi-step YAML workload schedule inside a single process and channel pool.
+   *
+   * <p>Closed-loop concurrency ({@code CR}) workers run on a dedicated {@code concurrencyExecutor}
+   * sized to {@code maxStepConcurrency} so parked workers never starve open-loop {@code tps} tasks
+   * submitted to {@code executor}.
+   */
+  private void runMultiStep(ExecutorService executor) {
+    int maxStepConcurrency =
+        steps.stream()
+            .filter(s -> s.getConcurrency() != null)
+            .mapToInt(BenchmarkConfig.WorkloadStep::getConcurrency)
+            .max()
+            .orElse(0);
+    ExecutorService concurrencyExecutor =
+        maxStepConcurrency > 0 ? Executors.newFixedThreadPool(maxStepConcurrency) : null;
+
+    if (concurrencyExecutor != null) {
+      for (int i = 0; i < maxStepConcurrency; i++) {
+        final int workerIndex = i;
+        concurrencyExecutor.submit(() -> runConcurrencyWorker(workerIndex));
+      }
+    }
+
+    Thread generatorThread = new Thread(() -> executeStepSchedule(executor), "Step-Generator");
+    generatorThread.start();
+
+    try {
+      if (duration != null) {
+        generatorThread.join(duration.toMillis());
+      } else {
+        generatorThread.join();
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } finally {
+      generatorThread.interrupt();
+      synchronized (concurrencyLock) {
+        activeConcurrency = 0;
+        concurrencyLock.notifyAll();
+      }
+      if (resourceMonitor != null) {
+        resourceMonitor.stop();
+      }
+      if (concurrencyExecutor != null) {
+        concurrencyExecutor.shutdownNow();
+      }
+      executor.shutdownNow();
+    }
+  }
+
+  /**
+   * Runs closed-loop concurrency worker {@code workerIndex}, parking on {@link #concurrencyLock}
+   * whenever {@code workerIndex >= activeConcurrency}.
+   */
+  private void runConcurrencyWorker(int workerIndex) {
+    while (!Thread.currentThread().isInterrupted()) {
+      synchronized (concurrencyLock) {
+        while (workerIndex >= activeConcurrency && !Thread.currentThread().isInterrupted()) {
+          try {
+            concurrencyLock.wait();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+          }
+        }
+      }
+      if (Thread.currentThread().isInterrupted()) {
+        return;
+      }
+      long startTime = System.nanoTime();
+      try {
+        executeOperation();
+      } catch (Exception e) {
+        if (!Thread.currentThread().isInterrupted() && !isCancellationOrInterruption(e)) {
+          System.err.println("Operation failed: " + e.getMessage());
+          errorCounter.add(1, getAttributes());
+        }
+      } finally {
+        if (shouldMeasureEntireMethod()) {
+          long endTime = System.nanoTime();
+          long latencyUs = (endTime - startTime) / 1000;
+          latencyHistogram.record(latencyUs, getAttributes());
+        }
+        operationCounter.add(1, getAttributes());
+      }
+    }
+  }
+
+  private void executeStepSchedule(ExecutorService executor) {
+    try {
+      for (int i = 0; i < steps.size(); i++) {
+        if (Thread.currentThread().isInterrupted()) {
+          break;
+        }
+        BenchmarkConfig.WorkloadStep step = steps.get(i);
+        step.validate();
+        Duration stepDuration = step.parsedDuration();
+        LoadType stepLoadType = step.resolveLoadType(this.loadType);
+        currentStepName =
+            step.getName() != null && !step.getName().isEmpty()
+                ? step.getName()
+                : ("step-" + (i + 1));
+        currentStepAttributes =
+            this.attributes.toBuilder()
+                .put("step_name", currentStepName)
+                .put("load_type", stepLoadType.name().toLowerCase())
+                .build();
+
+        Instant stepStart = Instant.now();
+        if (step.getConcurrency() != null) {
+          synchronized (concurrencyLock) {
+            activeConcurrency = step.getConcurrency();
+            concurrencyLock.notifyAll();
+          }
+          Thread.sleep(stepDuration.toMillis());
+        } else {
+          synchronized (concurrencyLock) {
+            activeConcurrency = 0;
+            concurrencyLock.notifyAll();
+          }
+          double stepTps = step.resolveTps(this.tps);
+          double stepBurstFactor =
+              step.getBurstFactor() != null ? step.getBurstFactor() : this.burstFactor;
+          stepLoadType.runForDuration(this, executor, stepDuration, stepTps, stepBurstFactor);
+        }
+        Instant stepEnd = Instant.now();
+        System.out.printf(
+            "STEP_WINDOW step=%s load_type=%s start=%s end=%s%n",
+            currentStepName, stepLoadType.name().toLowerCase(), stepStart, stepEnd);
+
+        if (i == 0 && measureHeapLeak && !Thread.currentThread().isInterrupted()) {
+          synchronized (concurrencyLock) {
+            activeConcurrency = 0;
+            concurrencyLock.notifyAll();
+          }
+          preTestHeapBytes = ResourceMonitor.measureForceGcHeapUsedBytes();
+          if (heapAfterGcHistogram != null) {
+            heapAfterGcHistogram.record(
+                preTestHeapBytes, getAttributes().toBuilder().put("heap_phase", "pre").build());
+          }
+          System.out.printf("HEAP_BASELINE phase=pre bytes=%d%n", preTestHeapBytes);
+        }
+      }
+
+      synchronized (concurrencyLock) {
+        activeConcurrency = 0;
+        concurrencyLock.notifyAll();
+      }
+
+      if (measureHeapLeak && !Thread.currentThread().isInterrupted()) {
+        if (postTestIdleDuration != null && postTestIdleDuration.toMillis() > 0) {
+          Thread.sleep(postTestIdleDuration.toMillis());
+        }
+        postTestHeapBytes = ResourceMonitor.measureForceGcHeapUsedBytes();
+        if (heapAfterGcHistogram != null) {
+          heapAfterGcHistogram.record(
+              postTestHeapBytes, getAttributes().toBuilder().put("heap_phase", "post").build());
+        }
+        System.out.printf("HEAP_BASELINE phase=post bytes=%d%n", postTestHeapBytes);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 

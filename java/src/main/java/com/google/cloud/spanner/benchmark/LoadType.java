@@ -1,5 +1,6 @@
 package com.google.cloud.spanner.benchmark;
 
+import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 
 public enum LoadType {
@@ -183,4 +184,64 @@ public enum LoadType {
   };
 
   public abstract void run(AbstractBenchmark benchmark, ExecutorService executor);
+
+  public void runForDuration(
+      AbstractBenchmark benchmark,
+      ExecutorService executor,
+      Duration stepDuration,
+      double stepTps,
+      double stepBurstFactor) {
+    if (stepDuration == null || stepDuration.isZero() || stepDuration.isNegative()) {
+      return;
+    }
+    long deadlineNs = System.nanoTime() + stepDuration.toNanos();
+    long nextTickTime = System.nanoTime();
+    long tickDurationNs = 1_000_000L; // 1ms
+    long poissonTimelineNs = System.nanoTime();
+    double effectiveRate = stepTps > 0 ? stepTps : benchmark.tps;
+
+    while (!Thread.currentThread().isInterrupted() && System.nanoTime() < deadlineNs) {
+      long now = System.nanoTime();
+      if (nextTickTime < now) {
+        nextTickTime = now;
+      }
+      long targetTickEnd = Math.min(deadlineNs, nextTickTime + tickDurationNs);
+
+      if (poissonTimelineNs < nextTickTime) {
+        poissonTimelineNs = nextTickTime;
+      }
+
+      int count = 0;
+      if (effectiveRate > 0) {
+        while (poissonTimelineNs < targetTickEnd) {
+          count++;
+          long delay = AbstractBenchmark.calculatePoissonDelay(effectiveRate);
+          poissonTimelineNs += delay;
+        }
+      } else {
+        poissonTimelineNs = targetTickEnd;
+      }
+
+      for (int i = 0; i < count; i++) {
+        benchmark.submitTask(executor);
+      }
+
+      nextTickTime += tickDurationNs;
+      AbstractBenchmark.sleepHybrid(Math.min(deadlineNs, nextTickTime));
+    }
+  }
+
+  /**
+   * @deprecated Use {@link BenchmarkConfig.WorkloadStep} instead.
+   */
+  @Deprecated
+  public static class WorkloadStep {
+    public double resolveTps(double defaultTps) {
+      return defaultTps;
+    }
+
+    public LoadType resolveLoadType(LoadType defaultLoadType) {
+      return defaultLoadType;
+    }
+  }
 }

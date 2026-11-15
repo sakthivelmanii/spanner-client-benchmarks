@@ -1,7 +1,9 @@
 package com.google.cloud.spanner.benchmark;
 
+import com.google.cloud.grpc.GcpManagedChannelOptions.GcpChannelPoolOptions;
 import com.google.cloud.opentelemetry.metric.GoogleCloudMetricExporter;
 import com.google.cloud.opentelemetry.metric.MetricConfiguration;
+import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.benchmark.tpcc.TpccCommand;
 import com.google.cloud.spanner.benchmark.tpcc.TpccInitCommand;
 import io.opentelemetry.api.OpenTelemetry;
@@ -14,9 +16,18 @@ import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.View;
 import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
 import io.opentelemetry.sdk.resources.Resource;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.Spec;
 
 @Command(
     name = "BenchmarkApp",
@@ -33,22 +44,29 @@ import picocli.CommandLine.Option;
     })
 public class BenchmarkApp implements Runnable {
 
+  @Spec private CommandSpec spec;
+
+  @Option(
+      names = {"-c", "--config"},
+      description = "Path to YAML benchmark configuration file")
+  private String configPath;
+
   @Option(
       names = {"-p", "--project"},
       description = "Google Cloud Project ID",
-      required = true)
+      required = false)
   private String projectId;
 
   @Option(
       names = {"-i", "--instance"},
       description = "Spanner Instance ID",
-      required = true)
+      required = false)
   private String instanceId;
 
   @Option(
       names = {"-d", "--database"},
       description = "Spanner Database ID",
-      required = true)
+      required = false)
   private String databaseId;
 
   @Option(
@@ -88,19 +106,45 @@ public class BenchmarkApp implements Runnable {
       defaultValue = "10s")
   private String resourceProbeInterval;
 
+  @Option(
+      names = {"--num-channels"},
+      description = "Maximum number of gRPC channels in the pool")
+  private Integer numChannels;
+
+  @Option(
+      names = {"--min-channels"},
+      description = "Minimum number of gRPC channels in the dynamic channel pool")
+  private Integer minChannels;
+
+  @Option(
+      names = {"--measure-heap-leak"},
+      description = "Record forced-GC heap before and after benchmark")
+  private Boolean measureHeapLeak;
+
+  @Option(
+      names = {"--post-test-idle-duration"},
+      description = "Idle wait duration before post-test heap measurement (e.g. 5m)")
+  private String postTestIdleDuration;
+
   public static final String METER_NAME = "spanner-benchmark";
   public static final String LATENCY_NAME = "spanner_client_benchmarks/latency";
   public static final String OPERATION_COUNT_NAME = "spanner_client_benchmarks/operation_count";
   public static final String ERROR_COUNT_NAME = "spanner_client_benchmarks/error_count";
   public static final String MEMORY_USAGE_NAME = "spanner_client_benchmarks/memory_usage";
   public static final String CPU_UTILIZATION_NAME = "spanner_client_benchmarks/cpu_utilization";
+  public static final String HEAP_AFTER_GC_NAME = "spanner_client_benchmarks/heap_after_gc";
 
   public static void main(String[] args) {
-    int exitCode =
-        new CommandLine(new BenchmarkApp())
-            .setCaseInsensitiveEnumValuesAllowed(true)
-            .setAllowSubcommandsAsOptionParameters(true)
-            .execute(args);
+    int exitCode;
+    try {
+      exitCode =
+          new CommandLine(new BenchmarkApp())
+              .setCaseInsensitiveEnumValuesAllowed(true)
+              .setAllowSubcommandsAsOptionParameters(true)
+              .execute(args);
+    } finally {
+      flushAndCloseOpenTelemetry();
+    }
     System.exit(exitCode);
   }
 
@@ -154,10 +198,312 @@ public class BenchmarkApp implements Runnable {
     return resourceProbeInterval;
   }
 
+  public CommandSpec getSpec() {
+    return spec;
+  }
+
+  public String getConfigPath() {
+    return configPath;
+  }
+
+  public void setConfigPath(String configPath) {
+    this.configPath = configPath;
+  }
+
+  public void setProjectId(String projectId) {
+    this.projectId = projectId;
+  }
+
+  public void setInstanceId(String instanceId) {
+    this.instanceId = instanceId;
+  }
+
+  public void setDatabaseId(String databaseId) {
+    this.databaseId = databaseId;
+  }
+
+  public void setMock(boolean mock) {
+    this.mock = mock;
+  }
+
+  public void setNoMetrics(boolean noMetrics) {
+    this.noMetrics = noMetrics;
+  }
+
+  public void setDuration(String duration) {
+    this.duration = duration;
+  }
+
+  public void setForAlerting(boolean forAlerting) {
+    this.forAlerting = forAlerting;
+  }
+
+  public void setBenchmarkName(String benchmarkName) {
+    this.benchmarkName = benchmarkName;
+  }
+
+  public void setResourceProbeInterval(String resourceProbeInterval) {
+    this.resourceProbeInterval = resourceProbeInterval;
+  }
+
+  public Integer getNumChannels() {
+    return numChannels;
+  }
+
+  public void setNumChannels(Integer numChannels) {
+    this.numChannels = numChannels;
+  }
+
+  public Integer getMinChannels() {
+    return minChannels;
+  }
+
+  public void setMinChannels(Integer minChannels) {
+    this.minChannels = minChannels;
+  }
+
+  public Boolean getMeasureHeapLeak() {
+    return measureHeapLeak;
+  }
+
+  public void setMeasureHeapLeak(Boolean measureHeapLeak) {
+    this.measureHeapLeak = measureHeapLeak;
+  }
+
+  public String getPostTestIdleDuration() {
+    return postTestIdleDuration;
+  }
+
+  public void setPostTestIdleDuration(String postTestIdleDuration) {
+    this.postTestIdleDuration = postTestIdleDuration;
+  }
+
+  public static boolean hasMatchedOption(CommandSpec commandSpec, String optionName) {
+    if (commandSpec == null
+        || commandSpec.commandLine() == null
+        || commandSpec.commandLine().getParseResult() == null) {
+      return false;
+    }
+    return commandSpec.commandLine().getParseResult().hasMatchedOption(optionName);
+  }
+
+  static <T> T mergeOption(
+      CommandSpec commandSpec, String optionName, T currentValue, T yamlValue) {
+    return !hasMatchedOption(commandSpec, optionName) && yamlValue != null
+        ? yamlValue
+        : currentValue;
+  }
+
+  public void validateConnection(CommandSpec commandSpec) {
+    CommandLine cmdLine =
+        commandSpec != null && commandSpec.commandLine() != null
+            ? commandSpec.commandLine()
+            : (spec != null && spec.commandLine() != null
+                ? spec.commandLine()
+                : new CommandLine(this));
+    if (projectId == null || projectId.trim().isEmpty()) {
+      throw new CommandLine.ParameterException(
+          cmdLine, "Missing required option: '--project=<projectId>' (via CLI or --config YAML)");
+    }
+    if (instanceId == null || instanceId.trim().isEmpty()) {
+      throw new CommandLine.ParameterException(
+          cmdLine, "Missing required option: '--instance=<instanceId>' (via CLI or --config YAML)");
+    }
+    if (databaseId == null || databaseId.trim().isEmpty()) {
+      throw new CommandLine.ParameterException(
+          cmdLine, "Missing required option: '--database=<databaseId>' (via CLI or --config YAML)");
+    }
+  }
+
+  private BenchmarkConfig config = new BenchmarkConfig();
+
+  public BenchmarkConfig getConfig() {
+    return config;
+  }
+
+  public BenchmarkConfig applyParentYamlConfig(String explicitConfigPath) throws IOException {
+    String path =
+        explicitConfigPath != null && !explicitConfigPath.trim().isEmpty()
+            ? explicitConfigPath
+            : this.configPath;
+    BenchmarkConfig resolvedConfig =
+        path != null && !path.trim().isEmpty() ? loadConfig(Path.of(path)) : new BenchmarkConfig();
+
+    this.projectId = mergeOption(spec, "--project", this.projectId, resolvedConfig.getProject());
+    resolvedConfig.setProject(this.projectId);
+
+    this.instanceId =
+        mergeOption(spec, "--instance", this.instanceId, resolvedConfig.getInstance());
+    resolvedConfig.setInstance(this.instanceId);
+
+    this.databaseId =
+        mergeOption(spec, "--database", this.databaseId, resolvedConfig.getDatabase());
+    resolvedConfig.setDatabase(this.databaseId);
+
+    this.host = mergeOption(spec, "--host", this.host, resolvedConfig.getHost());
+    resolvedConfig.setHost(this.host);
+
+    this.mock = mergeOption(spec, "--mock", this.mock, resolvedConfig.getMock());
+    resolvedConfig.setMock(this.mock);
+
+    this.noMetrics =
+        mergeOption(spec, "--no-metrics", this.noMetrics, resolvedConfig.getNoMetrics());
+    resolvedConfig.setNoMetrics(this.noMetrics);
+
+    this.duration = mergeOption(spec, "--duration", this.duration, resolvedConfig.getDuration());
+    resolvedConfig.setDuration(this.duration);
+
+    this.forAlerting =
+        mergeOption(spec, "--for-alerting", this.forAlerting, resolvedConfig.getForAlerting());
+    resolvedConfig.setForAlerting(this.forAlerting);
+
+    this.benchmarkName =
+        mergeOption(
+            spec, "--benchmark-name", this.benchmarkName, resolvedConfig.getBenchmarkName());
+    resolvedConfig.setBenchmarkName(this.benchmarkName);
+
+    this.resourceProbeInterval =
+        mergeOption(
+            spec,
+            "--resource-probe-interval",
+            this.resourceProbeInterval,
+            resolvedConfig.getResourceProbeInterval());
+    resolvedConfig.setResourceProbeInterval(this.resourceProbeInterval);
+
+    this.numChannels =
+        mergeOption(spec, "--num-channels", this.numChannels, resolvedConfig.getNumChannels());
+    resolvedConfig.setNumChannels(this.numChannels);
+
+    this.minChannels =
+        mergeOption(spec, "--min-channels", this.minChannels, resolvedConfig.getMinChannels());
+    resolvedConfig.setMinChannels(this.minChannels);
+
+    this.measureHeapLeak =
+        mergeOption(
+            spec, "--measure-heap-leak", this.measureHeapLeak, resolvedConfig.getMeasureHeapLeak());
+    resolvedConfig.setMeasureHeapLeak(this.measureHeapLeak);
+
+    this.postTestIdleDuration =
+        mergeOption(
+            spec,
+            "--post-test-idle-duration",
+            this.postTestIdleDuration,
+            resolvedConfig.getPostTestIdleDuration());
+    resolvedConfig.setPostTestIdleDuration(this.postTestIdleDuration);
+
+    this.config = resolvedConfig;
+    return resolvedConfig;
+  }
+
+  public static BenchmarkConfig loadConfig(Path path) throws IOException {
+    return com.google.cloud.spanner.benchmark.BenchmarkConfig.load(path, new BenchmarkConfig());
+  }
+
+  public static BenchmarkConfig loadConfigFromYaml(String yamlContent) {
+    return com.google.cloud.spanner.benchmark.BenchmarkConfig.populateFromYaml(
+        yamlContent, new BenchmarkConfig());
+  }
+
+  /**
+   * Configures Spanner gRPC channel pool bounds on {@code builder}.
+   *
+   * <p>Precedence: {@code SPANNER_NUM_CHANNELS} environment variable &gt; CLI {@code
+   * --num-channels} &gt; YAML {@code num_channels} (and CLI {@code --min-channels} &gt; YAML {@code
+   * min_channels}). When {@code minChannels} is specified, dynamic channel pooling is enabled via
+   * {@link SpannerOptions.Builder#enableDynamicChannelPool()} and {@link GcpChannelPoolOptions}
+   * without calling {@code setNumChannels} (which would disable dynamic pooling).
+   */
+  public static void configureChannels(
+      SpannerOptions.Builder builder,
+      Integer cliNumChannels,
+      Integer cliMinChannels,
+      com.google.cloud.spanner.benchmark.BenchmarkConfig yamlConfig,
+      String envNumChannels) {
+    Integer resolvedMax = null;
+    if (envNumChannels != null && !envNumChannels.trim().isEmpty()) {
+      try {
+        resolvedMax = Integer.parseInt(envNumChannels.trim());
+      } catch (NumberFormatException e) {
+        System.err.println("Invalid SPANNER_NUM_CHANNELS value: " + envNumChannels);
+      }
+    }
+    if (resolvedMax == null && cliNumChannels != null) {
+      resolvedMax = cliNumChannels;
+    }
+    if (resolvedMax == null && yamlConfig != null && yamlConfig.getNumChannels() != null) {
+      resolvedMax = yamlConfig.getNumChannels();
+    }
+
+    Integer resolvedMin = cliMinChannels;
+    if (resolvedMin == null && yamlConfig != null && yamlConfig.getMinChannels() != null) {
+      resolvedMin = yamlConfig.getMinChannels();
+    }
+
+    if (resolvedMin != null) {
+      int maxChannels = resolvedMax != null ? resolvedMax : Math.max(resolvedMin, 4);
+      if (resolvedMin <= 0 || maxChannels <= 0 || resolvedMin > maxChannels) {
+        throw new IllegalArgumentException(
+            "Invalid channel pool bounds: minChannels="
+                + resolvedMin
+                + ", numChannels="
+                + maxChannels);
+      }
+      GcpChannelPoolOptions poolOptions =
+          GcpChannelPoolOptions.newBuilder()
+              .setMinSize(resolvedMin)
+              .setMaxSize(maxChannels)
+              .setInitSize(resolvedMin)
+              .build();
+      builder.enableDynamicChannelPool().setGcpChannelPoolOptions(poolOptions);
+    } else if (resolvedMax != null) {
+      if (resolvedMax <= 0) {
+        throw new IllegalArgumentException("numChannels must be > 0");
+      }
+      builder.setNumChannels(resolvedMax);
+    }
+  }
+
+  private static volatile SdkMeterProvider activeMeterProvider;
+  private static volatile boolean activeMeterProviderFromTesting;
+  private static final AtomicInteger openTelemetryFlushCount = new AtomicInteger(0);
+
+  public static void flushAndCloseOpenTelemetry() {
+    openTelemetryFlushCount.incrementAndGet();
+    SdkMeterProvider provider = activeMeterProvider;
+    if (provider != null) {
+      try {
+        provider.forceFlush().join(30, TimeUnit.SECONDS);
+      } catch (Exception e) {
+        // Ignore flush exceptions during shutdown
+      }
+      if (!activeMeterProviderFromTesting) {
+        try {
+          provider.close();
+        } catch (Exception e) {
+          // Ignore close exceptions during shutdown
+        }
+        activeMeterProvider = null;
+      }
+    }
+  }
+
+  public static int getOpenTelemetryFlushCount() {
+    return openTelemetryFlushCount.get();
+  }
+
+  public static class BenchmarkConfig extends com.google.cloud.spanner.benchmark.BenchmarkConfig {}
+
   private static OpenTelemetry testingOpenTelemetry;
 
   public static void setTestingOpenTelemetry(OpenTelemetry openTelemetry) {
     testingOpenTelemetry = openTelemetry;
+    if (openTelemetry instanceof OpenTelemetrySdk) {
+      activeMeterProvider = ((OpenTelemetrySdk) openTelemetry).getSdkMeterProvider();
+      activeMeterProviderFromTesting = true;
+    } else {
+      activeMeterProvider = null;
+      activeMeterProviderFromTesting = false;
+    }
   }
 
   // Public so subcommands in subpackages can access it
@@ -183,113 +529,136 @@ public class BenchmarkApp implements Runnable {
                             ? benchmarkName
                             : "spanner-benchmark")
                     .put(
-                        AttributeKey.stringKey("service.instance.id"),
-                        java.util.UUID.randomUUID().toString())
+                        AttributeKey.stringKey("service.instance.id"), UUID.randomUUID().toString())
                     .build());
 
-    return OpenTelemetrySdk.builder()
-        .setMeterProvider(
-            SdkMeterProvider.builder()
-                .setResource(resource)
-                .registerMetricReader(
-                    PeriodicMetricReader.create(
-                        GoogleCloudMetricExporter.createWithConfiguration(
-                            MetricConfiguration.builder().setProjectId(projectId).build())))
-                .registerView(
-                    InstrumentSelector.builder().setName("otel.sdk.*").build(),
-                    View.builder().setAggregation(Aggregation.drop()).build())
-                .registerView(
-                    InstrumentSelector.builder().setName(LATENCY_NAME).build(),
-                    View.builder()
-                        .setAggregation(Aggregation.explicitBucketHistogram(getLatencyBuckets()))
-                        .build())
-                .registerView(
-                    InstrumentSelector.builder()
-                        .setName("spanner_client_benchmarks/read_latency")
-                        .build(),
-                    View.builder()
-                        .setAggregation(
-                            Aggregation.explicitBucketHistogram(
-                                java.util.List.of(
-                                    50000.0,
-                                    100000.0,
-                                    250000.0,
-                                    500000.0,
-                                    750000.0,
-                                    1000000.0,
-                                    1250000.0,
-                                    1500000.0,
-                                    1750000.0,
-                                    2000000.0,
-                                    2250000.0,
-                                    2500000.0,
-                                    2750000.0,
-                                    3000000.0,
-                                    3250000.0,
-                                    3500000.0,
-                                    3750000.0,
-                                    4000000.0,
-                                    4250000.0,
-                                    4500000.0,
-                                    4750000.0,
-                                    5000000.0,
-                                    5500000.0,
-                                    6000000.0,
-                                    6500000.0,
-                                    7000000.0,
-                                    7500000.0,
-                                    8000000.0,
-                                    8500000.0,
-                                    9000000.0,
-                                    9500000.0,
-                                    10000000.0,
-                                    12500000.0,
-                                    15000000.0,
-                                    20000000.0,
-                                    30000000.0)))
-                        .build())
-                .registerView(
-                    InstrumentSelector.builder().setName(MEMORY_USAGE_NAME).build(),
-                    View.builder()
-                        .setAggregation(
-                            Aggregation.explicitBucketHistogram(
-                                java.util.List.of(
-                                    2.5 * MB,
-                                    5.0 * MB,
-                                    7.5 * MB,
-                                    10.0 * MB,
-                                    20.0 * MB,
-                                    30.0 * MB,
-                                    40.0 * MB,
-                                    50.0 * MB,
-                                    60.0 * MB,
-                                    70.0 * MB,
-                                    80.0 * MB,
-                                    90.0 * MB,
-                                    100.0 * MB,
-                                    200.0 * MB,
-                                    300.0 * MB,
-                                    400.0 * MB,
-                                    500.0 * MB,
-                                    750.0 * MB,
-                                    1000.0 * MB,
-                                    1500.0 * MB,
-                                    2000.0 * MB,
-                                    3000.0 * MB,
-                                    5000.0 * MB,
-                                    10000.0 * MB)))
-                        .build())
-                .registerView(
-                    InstrumentSelector.builder().setName(CPU_UTILIZATION_NAME).build(),
-                    View.builder()
-                        .setAggregation(
-                            Aggregation.explicitBucketHistogram(
-                                java.util.List.of(
-                                    0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35,
-                                    0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0)))
-                        .build())
-                .build())
-        .buildAndRegisterGlobal();
+    SdkMeterProvider meterProvider =
+        SdkMeterProvider.builder()
+            .setResource(resource)
+            .registerMetricReader(
+                PeriodicMetricReader.create(
+                    GoogleCloudMetricExporter.createWithConfiguration(
+                        MetricConfiguration.builder().setProjectId(projectId).build())))
+            .registerView(
+                InstrumentSelector.builder().setName("otel.sdk.*").build(),
+                View.builder().setAggregation(Aggregation.drop()).build())
+            .registerView(
+                InstrumentSelector.builder().setName(LATENCY_NAME).build(),
+                View.builder()
+                    .setAggregation(Aggregation.explicitBucketHistogram(getLatencyBuckets()))
+                    .build())
+            .registerView(
+                InstrumentSelector.builder()
+                    .setName("spanner_client_benchmarks/read_latency")
+                    .build(),
+                View.builder()
+                    .setAggregation(
+                        Aggregation.explicitBucketHistogram(
+                            List.of(
+                                50000.0,
+                                100000.0,
+                                250000.0,
+                                500000.0,
+                                750000.0,
+                                1000000.0,
+                                1250000.0,
+                                1500000.0,
+                                1750000.0,
+                                2000000.0,
+                                2250000.0,
+                                2500000.0,
+                                2750000.0,
+                                3000000.0,
+                                3250000.0,
+                                3500000.0,
+                                3750000.0,
+                                4000000.0,
+                                4250000.0,
+                                4500000.0,
+                                4750000.0,
+                                5000000.0,
+                                5500000.0,
+                                6000000.0,
+                                6500000.0,
+                                7000000.0,
+                                7500000.0,
+                                8000000.0,
+                                8500000.0,
+                                9000000.0,
+                                9500000.0,
+                                10000000.0,
+                                12500000.0,
+                                15000000.0,
+                                20000000.0,
+                                30000000.0)))
+                    .build())
+            .registerView(
+                InstrumentSelector.builder().setName(MEMORY_USAGE_NAME).build(),
+                View.builder()
+                    .setAggregation(
+                        Aggregation.explicitBucketHistogram(
+                            List.of(
+                                2.5 * MB,
+                                5.0 * MB,
+                                7.5 * MB,
+                                10.0 * MB,
+                                20.0 * MB,
+                                30.0 * MB,
+                                40.0 * MB,
+                                50.0 * MB,
+                                60.0 * MB,
+                                70.0 * MB,
+                                80.0 * MB,
+                                90.0 * MB,
+                                100.0 * MB,
+                                200.0 * MB,
+                                300.0 * MB,
+                                400.0 * MB,
+                                500.0 * MB,
+                                750.0 * MB,
+                                1000.0 * MB,
+                                1500.0 * MB,
+                                2000.0 * MB,
+                                3000.0 * MB,
+                                5000.0 * MB,
+                                10000.0 * MB)))
+                    .build())
+            .registerView(
+                InstrumentSelector.builder().setName(HEAP_AFTER_GC_NAME).build(),
+                View.builder()
+                    .setAggregation(
+                        Aggregation.explicitBucketHistogram(
+                            List.of(
+                                2.5 * MB,
+                                5.0 * MB,
+                                10.0 * MB,
+                                20.0 * MB,
+                                50.0 * MB,
+                                100.0 * MB,
+                                200.0 * MB,
+                                500.0 * MB,
+                                1000.0 * MB,
+                                2000.0 * MB,
+                                5000.0 * MB,
+                                10000.0 * MB)))
+                    .build())
+            .registerView(
+                InstrumentSelector.builder().setName(CPU_UTILIZATION_NAME).build(),
+                View.builder()
+                    .setAggregation(
+                        Aggregation.explicitBucketHistogram(
+                            List.of(
+                                0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4,
+                                0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0)))
+                    .build())
+            .build();
+
+    activeMeterProvider = meterProvider;
+    activeMeterProviderFromTesting = false;
+    Runtime.getRuntime()
+        .addShutdownHook(new Thread(BenchmarkApp::flushAndCloseOpenTelemetry, "OTel-Flush-Hook"));
+
+    return OpenTelemetrySdk.builder().setMeterProvider(meterProvider).buildAndRegisterGlobal();
   }
 
   public static BenchmarkMetrics createBenchmarkMetrics(Meter meter, String latencyMetricName) {
@@ -320,16 +689,22 @@ public class BenchmarkApp implements Runnable {
             .histogramBuilder(CPU_UTILIZATION_NAME)
             .setDescription("Process CPU utilization")
             .setUnit("1")
+            .build(),
+        meter
+            .histogramBuilder(HEAP_AFTER_GC_NAME)
+            .ofLongs()
+            .setDescription("Heap memory used after forced GC in bytes")
+            .setUnit("By")
             .build());
   }
 
-  private static java.util.List<Double> getLatencyBuckets() {
-    java.util.List<Double> buckets = new java.util.ArrayList<>();
+  private static List<Double> getLatencyBuckets() {
+    List<Double> buckets = new ArrayList<>();
     for (double i = 50.0; i <= 5000.0; i += 50.0) {
       buckets.add(i);
     }
     buckets.addAll(
-        java.util.List.of(
+        List.of(
             6000.0, 7000.0, 8000.0, 9000.0, 10000.0, 12000.0, 14000.0, 16000.0, 18000.0, 20000.0,
             25000.0, 30000.0, 40000.0, 50000.0, 75000.0, 100000.0, 150000.0, 200000.0));
     return buckets;
