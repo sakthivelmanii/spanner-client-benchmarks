@@ -146,4 +146,68 @@ public class BenchmarkRunAnalyzerTest {
       assertTrue(expected.getMessage().contains("Step durations"));
     }
   }
+
+  @Test
+  public void testUnnamedStepsUseRunnerStepNames() throws Exception {
+    Path yaml = Files.createTempFile("unnamed-steps", ".yaml");
+    try {
+      Files.writeString(
+          yaml,
+          "project: p\nsteps:\n  - { duration: 5m, concurrency: 50 }\n  - { duration: 10m, concurrency: 210 }\n");
+      List<PerformanceAnalyzer.StepSpec> steps = AnalyzerApp.loadBenchmarkConfig(yaml).steps();
+      assertEquals("step-1", steps.get(0).name());
+      assertEquals("step-2", steps.get(1).name());
+
+      MetricsService noopService =
+          new MetricsService(null, "p", "point-select", null, null, "java-client", false);
+      AnalyzerApp.setTestingMetricsService(noopService);
+      int mismatchExit =
+          new CommandLine(new AnalyzerApp())
+              .execute(
+                  "--config",
+                  yaml.toString(),
+                  "--benchmark-start-time",
+                  "2026-11-15T00:00:00Z",
+                  "--step-durations",
+                  "5m,10m,5m");
+      assertEquals(1, mismatchExit);
+    } finally {
+      AnalyzerApp.setTestingMetricsService(null);
+      Files.deleteIfExists(yaml);
+    }
+    assertEquals(
+        "step-1",
+        PerformanceAnalyzer.toStepSpecs(
+                List.of(
+                    Duration.ofMinutes(5),
+                    Duration.ofMinutes(10),
+                    Duration.ofMinutes(5),
+                    Duration.ofMinutes(15)))
+            .get(0)
+            .name());
+
+    List<String> requested = new ArrayList<>();
+    MetricsService fake =
+        new MetricsService(null, "p", "point-select", null, null, "java-client", false) {
+          @Override
+          public List<Distribution> fetchStepDistributions(TimeInterval interval, String stepName) {
+            requested.add(stepName);
+            return List.of();
+          }
+        };
+    new PerformanceAnalyzer(fake, null)
+        .evaluateBenchmarkRun(
+            Instant.parse("2026-11-15T00:00:00Z"),
+            List.of(
+                new PerformanceAnalyzer.StepSpec(null, Duration.ofMinutes(5)),
+                new PerformanceAnalyzer.StepSpec("", Duration.ofMinutes(5))),
+            Duration.ZERO,
+            500.0,
+            null,
+            null,
+            null,
+            1L,
+            1L);
+    assertEquals(List.of("step-1", "step-2"), requested);
+  }
 }

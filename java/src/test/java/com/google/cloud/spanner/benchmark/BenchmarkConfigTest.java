@@ -1,6 +1,7 @@
 package com.google.cloud.spanner.benchmark;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -219,5 +220,42 @@ public class BenchmarkConfigTest {
     } finally {
       Files.deleteIfExists(yamlPath);
     }
+
+    String tpccMismatchYaml =
+        "project: p\ninstance: i\ndatabase: d\nbenchmark_type: point-select\n";
+    Path tpccYamlPath = Files.createTempFile("tpcc-mismatch-config", ".yaml");
+    try {
+      Files.write(tpccYamlPath, tpccMismatchYaml.getBytes(StandardCharsets.UTF_8));
+      BenchmarkApp tpccApp = new BenchmarkApp();
+      CommandLine tpccCmd =
+          new CommandLine(tpccApp)
+              .setCaseInsensitiveEnumValuesAllowed(true)
+              .setAllowSubcommandsAsOptionParameters(true);
+      CommandLine.ParseResult tpccParse = tpccCmd.parseArgs("-c", tpccYamlPath.toString(), "tpcc");
+      TpccCommand tpccSub = (TpccCommand) tpccParse.subcommand().commandSpec().userObject();
+      try {
+        tpccSub.applyYamlConfig();
+        fail("Expected IllegalArgumentException on tpcc benchmark_type mismatch");
+      } catch (IllegalArgumentException expected) {
+        assertTrue(expected.getMessage().contains("benchmark_type"));
+      }
+    } finally {
+      Files.deleteIfExists(tpccYamlPath);
+    }
+  }
+
+  @Test
+  public void testNoCompatibilityShimsRemain() {
+    for (Class<?> nested : LoadType.class.getDeclaredClasses()) {
+      assertFalse(
+          "LoadType.WorkloadStep shim must be removed",
+          nested.getSimpleName().equals("WorkloadStep"));
+    }
+    for (Class<?> nested : BenchmarkApp.class.getDeclaredClasses()) {
+      assertFalse(
+          "BenchmarkApp.BenchmarkConfig shim must be removed",
+          nested.getSimpleName().equals("BenchmarkConfig"));
+    }
+    assertEquals(Object.class, BenchmarkConfig.WorkloadStep.class.getSuperclass());
   }
 }

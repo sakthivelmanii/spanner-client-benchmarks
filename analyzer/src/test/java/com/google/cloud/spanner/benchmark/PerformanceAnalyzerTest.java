@@ -202,17 +202,18 @@ public class PerformanceAnalyzerTest {
     PerformanceAnalyzer analyzer =
         new PerformanceAnalyzer(
             metricsService, new RegressionReporter(null, "java-client", "point-select"));
-    List<Duration> stepDurations =
+    List<PerformanceAnalyzer.StepSpec> stepSpecs =
         List.of(
-            Duration.ofMinutes(5),
-            Duration.ofMinutes(10),
-            Duration.ofMinutes(5),
-            Duration.ofMinutes(15));
+            new PerformanceAnalyzer.StepSpec("Phase 1", Duration.ofMinutes(5)),
+            new PerformanceAnalyzer.StepSpec("Phase 2", Duration.ofMinutes(10)),
+            new PerformanceAnalyzer.StepSpec("Phase 3a", Duration.ofMinutes(5)),
+            new PerformanceAnalyzer.StepSpec("Phase 3b", Duration.ofMinutes(15)));
 
-    PerformanceAnalyzer.UnifiedProfileResult result =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult result =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -221,7 +222,7 @@ public class PerformanceAnalyzerTest {
             null);
 
     assertTrue(
-        "Unified Profile gates should pass when all phases are within thresholds: "
+        "Benchmark run gates should pass when all phases are within thresholds: "
             + result.failureReasons(),
         result.passed());
     assertFalse(result.lockContentionDetected());
@@ -263,22 +264,23 @@ public class PerformanceAnalyzerTest {
     PerformanceAnalyzer analyzer =
         new PerformanceAnalyzer(
             metricsService, new RegressionReporter(null, "java-client", "point-select"));
-    List<Duration> stepDurations =
+    List<PerformanceAnalyzer.StepSpec> stepSpecs =
         List.of(
-            Duration.ofMinutes(5),
-            Duration.ofMinutes(10),
-            Duration.ofMinutes(5),
-            Duration.ofMinutes(15));
+            new PerformanceAnalyzer.StepSpec("Phase 1", Duration.ofMinutes(5)),
+            new PerformanceAnalyzer.StepSpec("Phase 2", Duration.ofMinutes(10)),
+            new PerformanceAnalyzer.StepSpec("Phase 3a", Duration.ofMinutes(5)),
+            new PerformanceAnalyzer.StepSpec("Phase 3b", Duration.ofMinutes(15)));
 
     assertTrue(analyzer.evaluateLockContention(5000.0, 2000.0, 1000.0, 0.15));
     assertFalse(analyzer.evaluateLockContention(5000.0, 2000.0, 1000.0, 0.65));
     assertTrue(analyzer.evaluateHeapDrift(100_000_000L, 106_000_000L, 0.05));
     assertFalse(analyzer.evaluateHeapDrift(100_000_000L, 104_000_000L, 0.05));
 
-    PerformanceAnalyzer.UnifiedProfileResult result =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult result =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -313,10 +315,11 @@ public class PerformanceAnalyzerTest {
     metricsService.setStepDistribution("Phase 3a", spikeExact2500);
     metricsService.setStepDistribution("Phase 3b", baseline2000);
 
-    PerformanceAnalyzer.UnifiedProfileResult exactDeltaPass =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult exactDeltaPass =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -326,10 +329,11 @@ public class PerformanceAnalyzerTest {
     assertTrue("Spike at exact baseline + delta should pass", exactDeltaPass.passed());
 
     metricsService.setStepDistribution("Phase 2", spikeAbove2501);
-    PerformanceAnalyzer.UnifiedProfileResult plusOneUsFail =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult plusOneUsFail =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -343,10 +347,11 @@ public class PerformanceAnalyzerTest {
     // Only recovery fails while all other gates pass.
     metricsService.setStepDistribution("Phase 2", spikeExact2500);
     metricsService.setStepDistribution("Phase 3b", spikeAbove2501);
-    PerformanceAnalyzer.UnifiedProfileResult onlyRecoveryFail =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult onlyRecoveryFail =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -367,10 +372,11 @@ public class PerformanceAnalyzerTest {
     metricsService.setStepDistribution("Phase 2", spike850);
     metricsService.setStepDistribution("Phase 3a", spike850);
     metricsService.setStepDistribution("Phase 3b", baseline400);
-    PerformanceAnalyzer.UnifiedProfileResult twoXFail =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult twoXFail =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -387,10 +393,11 @@ public class PerformanceAnalyzerTest {
     metricsService.setStepDistribution("Phase 3a", spikeExact2500);
     metricsService.setStepDistribution("Phase 3b", baseline2000);
     metricsService.setOpLatencyDistributions(List.of());
-    PerformanceAnalyzer.UnifiedProfileResult missingOpLatency =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult missingOpLatency =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -405,10 +412,11 @@ public class PerformanceAnalyzerTest {
     // (d) Heap 0/0 with no override adds "heap_after_gc returned no data...".
     metricsService.setOpLatencyDistributions(List.of(opLatencyMs));
     metricsService.setHeapBytes(0L, 0L);
-    PerformanceAnalyzer.UnifiedProfileResult missingHeap =
-        analyzer.evaluateUnifiedProfile(
+    PerformanceAnalyzer.BenchmarkRunResult missingHeap =
+        analyzer.evaluateBenchmarkRun(
             Instant.parse("2026-11-15T00:00:00Z"),
-            stepDurations,
+            stepSpecs,
+            Duration.ZERO,
             500.0,
             "inst-1",
             "db-1",
@@ -420,12 +428,13 @@ public class PerformanceAnalyzerTest {
         missingHeap.failureReasons().stream()
             .anyMatch(r -> r.startsWith("heap_after_gc returned no data")));
 
-    // (e) 3 step durations throw IllegalArgumentException.
-    boolean threwOnThreeSteps = false;
+    // (e) Fewer than 2 steps throw IllegalArgumentException.
+    boolean threwOnOneStep = false;
     try {
-      analyzer.evaluateUnifiedProfile(
+      analyzer.evaluateBenchmarkRun(
           Instant.parse("2026-11-15T00:00:00Z"),
-          List.of(Duration.ofMinutes(5), Duration.ofMinutes(10), Duration.ofMinutes(5)),
+          List.of(new PerformanceAnalyzer.StepSpec("Phase 1", Duration.ofMinutes(5))),
+          Duration.ZERO,
           500.0,
           "inst-1",
           "db-1",
@@ -433,8 +442,8 @@ public class PerformanceAnalyzerTest {
           100_000_000L,
           102_000_000L);
     } catch (IllegalArgumentException expected) {
-      threwOnThreeSteps = true;
+      threwOnOneStep = true;
     }
-    assertTrue("Expected IllegalArgumentException for 3 step durations", threwOnThreeSteps);
+    assertTrue("Expected IllegalArgumentException for fewer than 2 steps", threwOnOneStep);
   }
 }

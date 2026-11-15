@@ -1,6 +1,7 @@
 package com.google.cloud.spanner.benchmark;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 import com.google.api.Distribution;
 import com.google.monitoring.v3.TimeInterval;
@@ -87,7 +88,7 @@ public class AnalyzerAppTest {
             .execute(
                 "-p",
                 "my-proj",
-                "--unified-profile-start",
+                "--benchmark-start-time",
                 "2026-11-15T00:00:00Z",
                 "--step-durations",
                 "5m,10m,5m,15m",
@@ -101,14 +102,14 @@ public class AnalyzerAppTest {
                 "100000000",
                 "--post-heap-bytes",
                 "102000000");
-    assertEquals("Expected exit code 0 when Unified Profile passes", 0, passExit);
+    assertEquals("Expected exit code 0 when benchmark run gates pass", 0, passExit);
 
     int failExit =
         new CommandLine(new AnalyzerApp())
             .execute(
                 "-p",
                 "my-proj",
-                "--unified-profile-start",
+                "--benchmark-start-time",
                 "2026-11-15T00:00:00Z",
                 "--step-durations",
                 "5m,10m,5m,15m",
@@ -123,5 +124,16 @@ public class AnalyzerAppTest {
                 "--post-heap-bytes",
                 "120000000");
     assertEquals("Expected exit code 2 when heap drift exceeds 5%", 2, failExit);
+  }
+
+  @Test
+  public void testDeprecatedUnifiedProfileOptionRemoved() {
+    int exit =
+        new CommandLine(new AnalyzerApp())
+            .execute("-p", "p", "--unified-profile-start", "2026-11-15T00:00:00Z");
+    assertEquals("unknown option must be a picocli usage error", 2, exit);
+    for (java.lang.reflect.Method m : PerformanceAnalyzer.class.getMethods()) {
+      assertFalse(m.getName().equals("evaluateUnifiedProfile"));
+    }
   }
 }

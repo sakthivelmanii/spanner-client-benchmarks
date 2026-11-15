@@ -230,18 +230,4 @@ public enum LoadType {
       AbstractBenchmark.sleepHybrid(Math.min(deadlineNs, nextTickTime));
     }
   }
-
-  /**
-   * @deprecated Use {@link BenchmarkConfig.WorkloadStep} instead.
-   */
-  @Deprecated
-  public static class WorkloadStep {
-    public double resolveTps(double defaultTps) {
-      return defaultTps;
-    }
-
-    public LoadType resolveLoadType(LoadType defaultLoadType) {
-      return defaultLoadType;
-    }
-  }
 }

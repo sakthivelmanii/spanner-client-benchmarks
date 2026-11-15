@@ -6,6 +6,7 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.benchmark.BenchmarkApp;
+import com.google.cloud.spanner.benchmark.BenchmarkConfig;
 import java.io.IOException;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Model.CommandSpec;
@@ -36,8 +37,8 @@ public class TpccInitCommand implements Runnable {
       defaultValue = "100000")
   private int items;
 
-  public BenchmarkApp.BenchmarkConfig applyYamlConfig() throws IOException {
-    BenchmarkApp.BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
+  public BenchmarkConfig applyYamlConfig() throws IOException {
+    BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
     if (!BenchmarkApp.hasMatchedOption(spec, "--warehouses") && config.getWarehouses() != null) {
       this.warehouses = config.getWarehouses();
     }
@@ -54,7 +55,7 @@ public class TpccInitCommand implements Runnable {
 
   @Override
   public void run() {
-    BenchmarkApp.BenchmarkConfig config;
+    BenchmarkConfig config;
     try {
       config = applyYamlConfig();
     } catch (IOException e) {

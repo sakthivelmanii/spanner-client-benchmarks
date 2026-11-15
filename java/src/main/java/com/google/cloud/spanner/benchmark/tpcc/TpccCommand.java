@@ -11,6 +11,7 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.benchmark.AbstractBenchmark;
 import com.google.cloud.spanner.benchmark.BenchmarkApp;
+import com.google.cloud.spanner.benchmark.BenchmarkConfig;
 import com.google.cloud.spanner.benchmark.BenchmarkMetrics;
 import com.google.cloud.spanner.benchmark.MockServerUtil;
 import io.grpc.Server;
@@ -59,8 +60,22 @@ public class TpccCommand implements Runnable {
       defaultValue = "false")
   private boolean extended;
 
-  public BenchmarkApp.BenchmarkConfig applyYamlConfig() throws IOException {
-    BenchmarkApp.BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
+  public BenchmarkConfig applyYamlConfig() throws IOException {
+    BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
+    if (config.getBenchmarkType() != null
+        && spec != null
+        && spec.name() != null
+        && !config.getBenchmarkType().equalsIgnoreCase(spec.name())) {
+      throw new IllegalArgumentException(
+          "YAML benchmark_type '"
+              + config.getBenchmarkType()
+              + "' does not match subcommand '"
+              + spec.name()
+              + "'");
+    }
+    if (spec != null && spec.name() != null && config.getBenchmarkType() == null) {
+      config.setBenchmarkType(spec.name());
+    }
     if (!BenchmarkApp.hasMatchedOption(spec, "--warehouses") && config.getWarehouses() != null) {
       this.warehouses = config.getWarehouses();
     }
@@ -87,7 +102,7 @@ public class TpccCommand implements Runnable {
 
   @Override
   public void run() {
-    BenchmarkApp.BenchmarkConfig config;
+    BenchmarkConfig config;
     try {
       config = applyYamlConfig();
     } catch (IOException e) {

@@ -485,7 +485,7 @@ public class BenchmarkAppTest extends AbstractBenchmarkTest {
     Path yamlPath = Files.createTempFile("unified-profile", ".yaml");
     try {
       Files.write(yamlPath, unifiedYaml.getBytes(StandardCharsets.UTF_8));
-      BenchmarkApp.BenchmarkConfig config = BenchmarkApp.loadConfig(yamlPath);
+      BenchmarkConfig config = BenchmarkApp.loadConfig(yamlPath);
 
       assertEquals("point-select", config.getBenchmarkType());
       assertEquals("Singers", config.getTable());
@@ -592,7 +592,7 @@ public class BenchmarkAppTest extends AbstractBenchmarkTest {
       }
 
       int tpccExit = new CommandLine(new BenchmarkApp()).execute("tpcc");
-      assertTrue("tpcc without -p/-i/-d must fail with non-zero exit code", tpccExit != 0);
+      assertEquals(2, tpccExit);
     } finally {
       Files.deleteIfExists(yamlPath);
     }
@@ -600,6 +600,11 @@ public class BenchmarkAppTest extends AbstractBenchmarkTest {
 
   @Test
   public void testLoadMultiStepBurstYamlAndStepValidation() {
+    assertTrue(
+        BenchmarkApp.loadConfigFromYaml(
+                "load_type: MULTI_STEP\nsteps:\n  - { duration: 1m, concurrency: 1 }\n")
+            .isMultiStepRequested());
+
     String burstYaml =
         "benchmark_type: point-select\n"
             + "table: Singers\n"
@@ -609,42 +614,39 @@ public class BenchmarkAppTest extends AbstractBenchmarkTest {
             + "  - { name: \"burst-step-1\", duration: 2m, burst_factor: 3.0 }\n"
             + "  - { name: \"burst-step-2\", duration: 1m, tps: 40.0, burst_factor: 2.5 }\n";
 
-    BenchmarkApp.BenchmarkConfig config = BenchmarkApp.loadConfigFromYaml(burstYaml);
+    BenchmarkConfig config = BenchmarkApp.loadConfigFromYaml(burstYaml);
     assertNotNull(config.getSteps());
     assertEquals(3, config.getSteps().size());
 
-    LoadType.WorkloadStep step0 = config.getSteps().get(0);
+    BenchmarkConfig.WorkloadStep step0 = config.getSteps().get(0);
     assertEquals(50.0, step0.resolveTps(20.0), 0.001);
     assertEquals(LoadType.STEADY, step0.resolveLoadType(LoadType.STEADY));
 
-    LoadType.WorkloadStep step1 = config.getSteps().get(1);
+    BenchmarkConfig.WorkloadStep step1 = config.getSteps().get(1);
     assertEquals(60.0, step1.resolveTps(20.0), 0.001);
     assertEquals(LoadType.SPIKY, step1.resolveLoadType(LoadType.STEADY));
 
-    LoadType.WorkloadStep step2 = config.getSteps().get(2);
+    BenchmarkConfig.WorkloadStep step2 = config.getSteps().get(2);
     assertEquals(100.0, step2.resolveTps(20.0), 0.001);
     assertEquals(LoadType.SPIKY, step2.resolveLoadType(LoadType.STEADY));
 
-    try {
-      BenchmarkApp.loadConfigFromYaml("steps: []\n");
-      fail("Expected IllegalArgumentException for empty steps list");
-    } catch (IllegalArgumentException expected) {
-      // expected
-    }
-
-    try {
-      BenchmarkApp.loadConfigFromYaml("steps:\n  - { name: \"bad\", concurrency: 10 }\n");
-      fail("Expected IllegalArgumentException for missing duration");
-    } catch (IllegalArgumentException expected) {
-      // expected
-    }
-
-    try {
-      BenchmarkApp.loadConfigFromYaml(
-          "steps:\n  - { name: \"bad\", duration: 1m, concurrency: 10, tps: 50.0 }\n");
-      fail("Expected IllegalArgumentException when both concurrency and tps are set");
-    } catch (IllegalArgumentException expected) {
-      // expected
+    String[] invalidYamls = {
+      "steps: []\n",
+      "steps: \"x\"\n",
+      "steps:\n  - { name: \"bad\", concurrency: 10 }\n",
+      "steps:\n  - { duration: 1m }\n",
+      "steps:\n  - { duration: 0s, concurrency: 1 }\n",
+      "steps:\n  - { duration: 1m, concurrency: 0 }\n",
+      "steps:\n  - { duration: 1m, tps: -1.0 }\n",
+      "steps:\n  - { name: \"bad\", duration: 1m, concurrency: 10, tps: 50.0 }\n"
+    };
+    for (String invalidYaml : invalidYamls) {
+      try {
+        BenchmarkApp.loadConfigFromYaml(invalidYaml);
+        fail("Expected IllegalArgumentException for invalid YAML: " + invalidYaml);
+      } catch (IllegalArgumentException expected) {
+        // expected
+      }
     }
   }
 

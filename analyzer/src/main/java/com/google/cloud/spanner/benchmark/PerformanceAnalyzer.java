@@ -174,21 +174,6 @@ public class PerformanceAnalyzer {
       boolean heapLeakDetected,
       List<String> failureReasons) {}
 
-  /**
-   * @deprecated Use {@link BenchmarkRunResult} instead.
-   */
-  @Deprecated
-  public record UnifiedProfileResult(
-      boolean passed,
-      double baselineP90Us,
-      double spikeP90Us,
-      double saturationP90Us,
-      double recoveryP90Us,
-      long totalErrors,
-      boolean lockContentionDetected,
-      boolean heapLeakDetected,
-      List<String> failureReasons) {}
-
   public boolean evaluateLockContention(
       double benchmarkLatencyUs,
       double operationLatencyUs,
@@ -209,6 +194,12 @@ public class PerformanceAnalyzer {
     return postHeapBytes > preHeapBytes * (1.0 + maxDriftRatio);
   }
 
+  // Must match AbstractBenchmark.executeStepSchedule so unnamed YAML steps query the exact
+  // step_name attribute exported by the benchmark runner ("step-" + (i + 1)).
+  static String defaultStepName(int zeroBasedIndex) {
+    return "step-" + (zeroBasedIndex + 1);
+  }
+
   public static List<StepSpec> toStepSpecs(List<Duration> stepDurations) {
     if (stepDurations == null || stepDurations.isEmpty()) {
       throw new IllegalArgumentException(
@@ -216,19 +207,7 @@ public class PerformanceAnalyzer {
     }
     List<StepSpec> specs = new ArrayList<>(stepDurations.size());
     for (int i = 0; i < stepDurations.size(); i++) {
-      String defaultName;
-      if (stepDurations.size() == 4) {
-        defaultName =
-            switch (i) {
-              case 0 -> "Phase 1";
-              case 1 -> "Phase 2";
-              case 2 -> "Phase 3a";
-              default -> "Phase 3b";
-            };
-      } else {
-        defaultName = "Step " + (i + 1);
-      }
-      specs.add(new StepSpec(defaultName, stepDurations.get(i)));
+      specs.add(new StepSpec(defaultStepName(i), stepDurations.get(i)));
     }
     return specs;
   }
@@ -242,6 +221,20 @@ public class PerformanceAnalyzer {
    * latencies are evaluated in microseconds ({@code us}); Spanner built-in {@code
    * operation_latencies} are recorded in milliseconds ({@code ms}) and converted to {@code us} via
    * {@code * 1000.0} before comparing against {@code benchmark_latency}.
+   *
+   * <p>Positional gate semantics across {@code N = steps.size()} steps ({@code N >= 2}):
+   *
+   * <ul>
+   *   <li>Step {@code 0} is the baseline window.
+   *   <li>Step {@code 1} is the spike window (checked against {@code baseline + allowedDeltaUs} and
+   *       {@code < 2.0 * baseline}).
+   *   <li>The last step ({@code N - 1}, when {@code N >= 3}) is the recovery window (checked
+   *       against {@code baseline + allowedDeltaUs}).
+   *   <li>Steps {@code 1..N-2} (or step {@code 1} when {@code N == 2}) are evaluated for thread or
+   *       lock contention ({@code benchmark_latency > operation_latencies + 1ms} while CPU &lt;
+   *       30%). With {@code N > 4}, middle steps {@code 2..N-2} are contention-checked without a
+   *       separate P90 latency threshold gate.
+   * </ul>
    */
   public BenchmarkRunResult evaluateBenchmarkRun(
       Instant benchmarkStartTime,
@@ -279,7 +272,7 @@ public class PerformanceAnalyzer {
       String name =
           step.name() != null && !step.name().trim().isEmpty()
               ? step.name().trim()
-              : "Step " + (i + 1);
+              : defaultStepName(i);
       Instant next = cursor.plus(step.duration());
       TimeInterval interval = buildInterval(cursor, next);
       intervals.add(interval);
@@ -411,46 +404,6 @@ public class PerformanceAnalyzer {
         method,
         overridePreHeapBytes,
         overridePostHeapBytes);
-  }
-
-  /**
-   * @deprecated Use {@link #evaluateBenchmarkRun} instead.
-   */
-  @Deprecated
-  public UnifiedProfileResult evaluateUnifiedProfile(
-      Instant profileStart,
-      List<Duration> stepDurations,
-      double allowedDeltaUs,
-      String instanceId,
-      String databaseId,
-      String method,
-      Long overridePreHeapBytes,
-      Long overridePostHeapBytes) {
-    if (stepDurations == null || stepDurations.size() != 4) {
-      throw new IllegalArgumentException(
-          "Step configuration requires 4 step durations (Phase 1, Phase 2, Phase 3a, Phase 3b)");
-    }
-    BenchmarkRunResult res =
-        evaluateBenchmarkRun(
-            profileStart,
-            toStepSpecs(stepDurations),
-            Duration.ZERO,
-            allowedDeltaUs,
-            instanceId,
-            databaseId,
-            method,
-            overridePreHeapBytes,
-            overridePostHeapBytes);
-    return new UnifiedProfileResult(
-        res.passed(),
-        res.baselineP90Us(),
-        res.spikeP90Us(),
-        res.saturationP90Us(),
-        res.recoveryP90Us(),
-        res.totalErrors(),
-        res.lockContentionDetected(),
-        res.heapLeakDetected(),
-        res.failureReasons());
   }
 
   private double getStepP90(TimeInterval interval, String stepName) {

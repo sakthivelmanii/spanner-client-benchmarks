@@ -396,12 +396,11 @@ public class BenchmarkApp implements Runnable {
   }
 
   public static BenchmarkConfig loadConfig(Path path) throws IOException {
-    return com.google.cloud.spanner.benchmark.BenchmarkConfig.load(path, new BenchmarkConfig());
+    return BenchmarkConfig.load(path, new BenchmarkConfig());
   }
 
   public static BenchmarkConfig loadConfigFromYaml(String yamlContent) {
-    return com.google.cloud.spanner.benchmark.BenchmarkConfig.populateFromYaml(
-        yamlContent, new BenchmarkConfig());
+    return BenchmarkConfig.populateFromYaml(yamlContent, new BenchmarkConfig());
   }
 
   /**
@@ -417,7 +416,7 @@ public class BenchmarkApp implements Runnable {
       SpannerOptions.Builder builder,
       Integer cliNumChannels,
       Integer cliMinChannels,
-      com.google.cloud.spanner.benchmark.BenchmarkConfig yamlConfig,
+      BenchmarkConfig yamlConfig,
       String envNumChannels) {
     Integer resolvedMax = null;
     if (envNumChannels != null && !envNumChannels.trim().isEmpty()) {
@@ -490,8 +489,6 @@ public class BenchmarkApp implements Runnable {
   public static int getOpenTelemetryFlushCount() {
     return openTelemetryFlushCount.get();
   }
-
-  public static class BenchmarkConfig extends com.google.cloud.spanner.benchmark.BenchmarkConfig {}
 
   private static OpenTelemetry testingOpenTelemetry;
 

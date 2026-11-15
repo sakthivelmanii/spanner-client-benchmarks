@@ -457,8 +457,7 @@ public class BenchmarkConfig {
   }
 
   /** Configuration for a single step in a multi-step YAML workload schedule. */
-  @SuppressWarnings("deprecation")
-  public static class WorkloadStep extends LoadType.WorkloadStep {
+  public static class WorkloadStep {
     private String name;
     private String duration;
     private Double tps;

@@ -145,8 +145,8 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
     return parent;
   }
 
-  public BenchmarkApp.BenchmarkConfig applyYamlConfig() throws IOException {
-    BenchmarkApp.BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
+  public BenchmarkConfig applyYamlConfig() throws IOException {
+    BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
     if (config.getBenchmarkType() != null
         && spec != null
         && spec.name() != null
@@ -234,7 +234,7 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
 
   @Override
   public void run() {
-    BenchmarkApp.BenchmarkConfig config;
+    BenchmarkConfig config;
     try {
       config = applyYamlConfig();
     } catch (IOException e) {
