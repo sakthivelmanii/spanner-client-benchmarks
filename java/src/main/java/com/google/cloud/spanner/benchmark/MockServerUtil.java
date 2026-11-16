@@ -453,7 +453,9 @@ public class MockServerUtil {
               .build()
               .start();
       int port = server.getPort();
-      parent.setHost("http://localhost:" + port);
+      String mockHost = "http://localhost:" + port;
+      parent.setHost(mockHost);
+      parent.getConfig().setHost(mockHost);
       return server;
     } catch (Exception e) {
       throw new RuntimeException("Failed to start local mock Spanner server", e);

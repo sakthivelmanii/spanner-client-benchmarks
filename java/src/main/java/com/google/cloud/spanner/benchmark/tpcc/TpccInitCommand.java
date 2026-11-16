@@ -25,31 +25,41 @@ public class TpccInitCommand implements Runnable {
       description = "Path to YAML benchmark configuration file")
   private String configPath;
 
+  // Under picocli execution, @ParentCommand is always injected before options are parsed;
+  // this lazy fallback exists only for unit tests that instantiate subcommands directly.
+  private BenchmarkApp ensureParent() {
+    if (parent == null) {
+      parent = new BenchmarkApp();
+    }
+    return parent;
+  }
+
   @Option(
       names = {"--warehouses"},
-      description = "Scale factor (number of warehouses)",
-      defaultValue = "1")
-  private int warehouses;
+      description = "Scale factor (number of warehouses) (default: 1)")
+  public void setWarehouses(int warehouses) {
+    ensureParent().getCliConfig().setWarehouses(warehouses);
+  }
 
   @Option(
       names = {"--items"},
-      description = "Number of items in catalog",
-      defaultValue = "100000")
-  private int items;
+      description = "Number of items in catalog (default: 100000)")
+  public void setItems(int items) {
+    ensureParent().getCliConfig().setItems(items);
+  }
 
   public BenchmarkConfig applyYamlConfig() throws IOException {
-    BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
-    if (!BenchmarkApp.hasMatchedOption(spec, "--warehouses") && config.getWarehouses() != null) {
-      this.warehouses = config.getWarehouses();
-    }
-    config.setWarehouses(this.warehouses);
+    BenchmarkApp app = ensureParent();
+    BenchmarkConfig cliConfig = app.getCliConfig();
+    BenchmarkConfig config = app.applyParentYamlConfig(this.configPath);
+    config.setWarehouses(
+        BenchmarkApp.resolveOption(
+            spec, "--warehouses", cliConfig.getWarehouses(), config.getWarehouses(), 1));
+    config.setItems(
+        BenchmarkApp.resolveOption(
+            spec, "--items", cliConfig.getItems(), config.getItems(), 100000));
 
-    if (!BenchmarkApp.hasMatchedOption(spec, "--items") && config.getItems() != null) {
-      this.items = config.getItems();
-    }
-    config.setItems(this.items);
-
-    parent.validateConnection(spec);
+    app.validateConnection(spec);
     return config;
   }
 

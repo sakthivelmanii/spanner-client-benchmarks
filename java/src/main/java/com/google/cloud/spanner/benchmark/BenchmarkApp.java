@@ -51,60 +51,8 @@ public class BenchmarkApp implements Runnable {
       description = "Path to YAML benchmark configuration file")
   private String configPath;
 
-  @Option(
-      names = {"-p", "--project"},
-      description = "Google Cloud Project ID",
-      required = false)
-  private String projectId;
-
-  @Option(
-      names = {"-i", "--instance"},
-      description = "Spanner Instance ID",
-      required = false)
-  private String instanceId;
-
-  @Option(
-      names = {"-d", "--database"},
-      description = "Spanner Database ID",
-      required = false)
-  private String databaseId;
-
-  @Option(
-      names = {"--host"},
-      description = "Custom Spanner host endpoint")
-  private String host;
-
-  @Option(
-      names = {"--mock"},
-      description = "Use local mock Spanner server.")
-  private boolean mock;
-
-  @Option(
-      names = {"--no-metrics"},
-      description = "Disable metrics exporting (for testing purposes).")
-  private boolean noMetrics;
-
-  @Option(
-      names = {"--duration"},
-      description =
-          "Duration of the benchmark (e.g. 60s, 5m, inf for infinite). Defaults to infinite if not specified.")
-  private String duration;
-
-  @Option(
-      names = {"--for-alerting"},
-      description = "Marks the benchmark for alerting purposes.")
-  private boolean forAlerting;
-
-  @Option(
-      names = {"--benchmark-name"},
-      description = "Optional name to identify this benchmark run in metrics.")
-  private String benchmarkName;
-
-  @Option(
-      names = {"--resource-probe-interval"},
-      description = "Interval for probing resource usage (e.g. 10s, 1m). Set to 0 to disable.",
-      defaultValue = "10s")
-  private String resourceProbeInterval;
+  private final BenchmarkConfig cliConfig = new BenchmarkConfig();
+  private BenchmarkConfig config = cliConfig;
 
   public static final String METER_NAME = "spanner-benchmark";
   public static final String LATENCY_NAME = "spanner_client_benchmarks/latency";
@@ -133,49 +81,121 @@ public class BenchmarkApp implements Runnable {
     System.out.println("Please specify a benchmark to run. Use --help for usage.");
   }
 
-  // Getters for subcommands
+  // Getters and CLI option setters delegating to BenchmarkConfig
   public String getProjectId() {
-    return projectId;
+    return config.getProject();
+  }
+
+  @Option(
+      names = {"-p", "--project"},
+      description = "Google Cloud Project ID",
+      required = false)
+  public void setProjectId(String projectId) {
+    this.cliConfig.setProject(projectId);
   }
 
   public String getInstanceId() {
-    return instanceId;
+    return config.getInstance();
+  }
+
+  @Option(
+      names = {"-i", "--instance"},
+      description = "Spanner Instance ID",
+      required = false)
+  public void setInstanceId(String instanceId) {
+    this.cliConfig.setInstance(instanceId);
   }
 
   public String getDatabaseId() {
-    return databaseId;
+    return config.getDatabase();
+  }
+
+  @Option(
+      names = {"-d", "--database"},
+      description = "Spanner Database ID",
+      required = false)
+  public void setDatabaseId(String databaseId) {
+    this.cliConfig.setDatabase(databaseId);
   }
 
   public String getHost() {
-    return host;
+    return config.getHost();
   }
 
+  @Option(
+      names = {"--host"},
+      description = "Custom Spanner host endpoint")
   public void setHost(String host) {
-    this.host = host;
+    this.cliConfig.setHost(host);
   }
 
   public boolean isMock() {
-    return mock;
+    return Boolean.TRUE.equals(config.getMock());
+  }
+
+  @Option(
+      names = {"--mock"},
+      description = "Use local mock Spanner server.")
+  public void setMock(boolean mock) {
+    this.cliConfig.setMock(mock);
   }
 
   public boolean isNoMetrics() {
-    return noMetrics;
+    return Boolean.TRUE.equals(config.getNoMetrics());
+  }
+
+  @Option(
+      names = {"--no-metrics"},
+      description = "Disable metrics exporting (for testing purposes).")
+  public void setNoMetrics(boolean noMetrics) {
+    this.cliConfig.setNoMetrics(noMetrics);
   }
 
   public String getDuration() {
-    return duration;
+    return config.getDuration();
+  }
+
+  @Option(
+      names = {"--duration"},
+      description =
+          "Duration of the benchmark (e.g. 60s, 5m, inf for infinite). Defaults to infinite if not specified.")
+  public void setDuration(String duration) {
+    this.cliConfig.setDuration(duration);
   }
 
   public boolean isForAlerting() {
-    return forAlerting;
+    return Boolean.TRUE.equals(config.getForAlerting());
+  }
+
+  @Option(
+      names = {"--for-alerting"},
+      description = "Marks the benchmark for alerting purposes.")
+  public void setForAlerting(boolean forAlerting) {
+    this.cliConfig.setForAlerting(forAlerting);
   }
 
   public String getBenchmarkName() {
-    return benchmarkName;
+    return config.getBenchmarkName();
+  }
+
+  @Option(
+      names = {"--benchmark-name"},
+      description = "Optional name to identify this benchmark run in metrics.")
+  public void setBenchmarkName(String benchmarkName) {
+    this.cliConfig.setBenchmarkName(benchmarkName);
   }
 
   public String getResourceProbeInterval() {
-    return resourceProbeInterval;
+    String val = config.getResourceProbeInterval();
+    return val != null ? val : "10s";
+  }
+
+  @Option(
+      names = {"--resource-probe-interval"},
+      description =
+          "Interval for probing resource usage (e.g. 10s, 1m). Set to 0 to disable (default: 10s).")
+  public void setResourceProbeInterval(String resourceProbeInterval) {
+    this.cliConfig.setResourceProbeInterval(resourceProbeInterval);
   }
 
   public CommandSpec getSpec() {
@@ -190,42 +210,6 @@ public class BenchmarkApp implements Runnable {
     this.configPath = configPath;
   }
 
-  public void setProjectId(String projectId) {
-    this.projectId = projectId;
-  }
-
-  public void setInstanceId(String instanceId) {
-    this.instanceId = instanceId;
-  }
-
-  public void setDatabaseId(String databaseId) {
-    this.databaseId = databaseId;
-  }
-
-  public void setMock(boolean mock) {
-    this.mock = mock;
-  }
-
-  public void setNoMetrics(boolean noMetrics) {
-    this.noMetrics = noMetrics;
-  }
-
-  public void setDuration(String duration) {
-    this.duration = duration;
-  }
-
-  public void setForAlerting(boolean forAlerting) {
-    this.forAlerting = forAlerting;
-  }
-
-  public void setBenchmarkName(String benchmarkName) {
-    this.benchmarkName = benchmarkName;
-  }
-
-  public void setResourceProbeInterval(String resourceProbeInterval) {
-    this.resourceProbeInterval = resourceProbeInterval;
-  }
-
   public static boolean hasMatchedOption(CommandSpec commandSpec, String optionName) {
     if (commandSpec == null
         || commandSpec.commandLine() == null
@@ -235,11 +219,23 @@ public class BenchmarkApp implements Runnable {
     return commandSpec.commandLine().getParseResult().hasMatchedOption(optionName);
   }
 
+  public static <T> T resolveOption(
+      CommandSpec commandSpec, String optionName, T cliValue, T yamlValue, T defaultValue) {
+    if (hasMatchedOption(commandSpec, optionName) && cliValue != null) {
+      return cliValue;
+    }
+    if (yamlValue != null) {
+      return yamlValue;
+    }
+    if (cliValue != null) {
+      return cliValue;
+    }
+    return defaultValue;
+  }
+
   static <T> T mergeOption(
       CommandSpec commandSpec, String optionName, T currentValue, T yamlValue) {
-    return !hasMatchedOption(commandSpec, optionName) && yamlValue != null
-        ? yamlValue
-        : currentValue;
+    return resolveOption(commandSpec, optionName, currentValue, yamlValue, currentValue);
   }
 
   public void validateConnection(CommandSpec commandSpec) {
@@ -249,6 +245,9 @@ public class BenchmarkApp implements Runnable {
             : (spec != null && spec.commandLine() != null
                 ? spec.commandLine()
                 : new CommandLine(this));
+    String projectId = config.getProject();
+    String instanceId = config.getInstance();
+    String databaseId = config.getDatabase();
     if (projectId == null || projectId.trim().isEmpty()) {
       throw new CommandLine.ParameterException(
           cmdLine, "Missing required option: '--project=<projectId>' (via CLI or --config YAML)");
@@ -263,7 +262,9 @@ public class BenchmarkApp implements Runnable {
     }
   }
 
-  private BenchmarkConfig config = new BenchmarkConfig();
+  public BenchmarkConfig getCliConfig() {
+    return cliConfig;
+  }
 
   public BenchmarkConfig getConfig() {
     return config;
@@ -277,46 +278,46 @@ public class BenchmarkApp implements Runnable {
     BenchmarkConfig resolvedConfig =
         path != null && !path.trim().isEmpty() ? loadConfig(Path.of(path)) : new BenchmarkConfig();
 
-    this.projectId = mergeOption(spec, "--project", this.projectId, resolvedConfig.getProject());
-    resolvedConfig.setProject(this.projectId);
-
-    this.instanceId =
-        mergeOption(spec, "--instance", this.instanceId, resolvedConfig.getInstance());
-    resolvedConfig.setInstance(this.instanceId);
-
-    this.databaseId =
-        mergeOption(spec, "--database", this.databaseId, resolvedConfig.getDatabase());
-    resolvedConfig.setDatabase(this.databaseId);
-
-    this.host = mergeOption(spec, "--host", this.host, resolvedConfig.getHost());
-    resolvedConfig.setHost(this.host);
-
-    this.mock = mergeOption(spec, "--mock", this.mock, resolvedConfig.getMock());
-    resolvedConfig.setMock(this.mock);
-
-    this.noMetrics =
-        mergeOption(spec, "--no-metrics", this.noMetrics, resolvedConfig.getNoMetrics());
-    resolvedConfig.setNoMetrics(this.noMetrics);
-
-    this.duration = mergeOption(spec, "--duration", this.duration, resolvedConfig.getDuration());
-    resolvedConfig.setDuration(this.duration);
-
-    this.forAlerting =
-        mergeOption(spec, "--for-alerting", this.forAlerting, resolvedConfig.getForAlerting());
-    resolvedConfig.setForAlerting(this.forAlerting);
-
-    this.benchmarkName =
-        mergeOption(
-            spec, "--benchmark-name", this.benchmarkName, resolvedConfig.getBenchmarkName());
-    resolvedConfig.setBenchmarkName(this.benchmarkName);
-
-    this.resourceProbeInterval =
-        mergeOption(
+    resolvedConfig.setProject(
+        resolveOption(
+            spec, "--project", cliConfig.getProject(), resolvedConfig.getProject(), null));
+    resolvedConfig.setInstance(
+        resolveOption(
+            spec, "--instance", cliConfig.getInstance(), resolvedConfig.getInstance(), null));
+    resolvedConfig.setDatabase(
+        resolveOption(
+            spec, "--database", cliConfig.getDatabase(), resolvedConfig.getDatabase(), null));
+    resolvedConfig.setHost(
+        resolveOption(spec, "--host", cliConfig.getHost(), resolvedConfig.getHost(), null));
+    resolvedConfig.setMock(
+        resolveOption(spec, "--mock", cliConfig.getMock(), resolvedConfig.getMock(), false));
+    resolvedConfig.setNoMetrics(
+        resolveOption(
+            spec, "--no-metrics", cliConfig.getNoMetrics(), resolvedConfig.getNoMetrics(), false));
+    resolvedConfig.setDuration(
+        resolveOption(
+            spec, "--duration", cliConfig.getDuration(), resolvedConfig.getDuration(), null));
+    resolvedConfig.setForAlerting(
+        resolveOption(
+            spec,
+            "--for-alerting",
+            cliConfig.getForAlerting(),
+            resolvedConfig.getForAlerting(),
+            false));
+    resolvedConfig.setBenchmarkName(
+        resolveOption(
+            spec,
+            "--benchmark-name",
+            cliConfig.getBenchmarkName(),
+            resolvedConfig.getBenchmarkName(),
+            null));
+    resolvedConfig.setResourceProbeInterval(
+        resolveOption(
             spec,
             "--resource-probe-interval",
-            this.resourceProbeInterval,
-            resolvedConfig.getResourceProbeInterval());
-    resolvedConfig.setResourceProbeInterval(this.resourceProbeInterval);
+            cliConfig.getResourceProbeInterval(),
+            resolvedConfig.getResourceProbeInterval(),
+            "10s"));
 
     this.config = resolvedConfig;
     return resolvedConfig;

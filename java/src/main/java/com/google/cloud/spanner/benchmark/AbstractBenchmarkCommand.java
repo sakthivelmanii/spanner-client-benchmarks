@@ -11,9 +11,6 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.grpc.Server;
 import io.opentelemetry.api.OpenTelemetry;
-import io.opentelemetry.api.metrics.DoubleHistogram;
-import io.opentelemetry.api.metrics.LongCounter;
-import io.opentelemetry.api.metrics.LongHistogram;
 import io.opentelemetry.api.metrics.Meter;
 import java.io.IOException;
 import java.time.Duration;
@@ -35,82 +32,129 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
       description = "Path to YAML benchmark configuration file")
   protected String configPath;
 
-  @Option(
-      names = {"-t", "--table"},
-      description = "Table name",
-      required = false)
-  protected String tableName;
+  // Under picocli execution, @ParentCommand is always injected before options are parsed;
+  // this lazy fallback exists only for unit tests that instantiate subcommands directly.
+  protected BenchmarkApp ensureParent() {
+    if (parent == null) {
+      parent = new BenchmarkApp();
+    }
+    return parent;
+  }
 
-  @Option(
-      names = {"--num-rows"},
-      description = "Number of rows to generate/select")
-  protected long numRows = 1000000;
+  public BenchmarkConfig getConfig() {
+    return ensureParent().getConfig();
+  }
 
-  @Option(
-      names = {"--tps"},
-      description = "Target transactions per second")
-  protected double tps = 10.0;
+  protected long getDefaultNumRows() {
+    return 1000000L;
+  }
 
-  @Option(
-      names = {"--threads"},
-      description = "Number of threads in the pool",
-      defaultValue = "10")
-  protected int threads;
+  protected double getDefaultTps() {
+    return 10.0;
+  }
 
-  @Option(
-      names = {"--load-type"},
-      description = "Load type (STEADY, SPIKY, GRADUAL, CLOSED_LOOP)",
-      defaultValue = "STEADY",
-      converter = LoadTypeConverter.class)
-  protected LoadType loadType = LoadType.STEADY;
-
-  @Option(
-      names = {"--cycle-duration"},
-      description = "Duration of a full cycle for gradual load")
-  protected String cycleDuration;
-
-  @Option(
-      names = {"--peak-factor"},
-      description = "Ratio of peak rate to average rate for gradual load")
-  protected Double peakFactor;
-
-  @Option(
-      names = {"--burst-factor"},
-      description = "Ratio of burst rate to average rate")
-  protected Double burstFactor;
-
-  @Option(
-      names = {"--burst-duration"},
-      description = "Average duration of a burst in seconds")
-  protected Double burstDuration;
-
-  @Option(
-      names = {"--burst-fraction"},
-      description = "Fraction of total time spent in the burst state")
-  protected Double burstFraction;
+  protected int getDefaultThreads() {
+    return 10;
+  }
 
   protected String getMetricName() {
     return LATENCY_NAME;
   }
 
+  @Option(
+      names = {"-t", "--table"},
+      description = "Table name",
+      required = false)
+  public void setTableName(String tableName) {
+    ensureParent().getCliConfig().setTable(tableName);
+  }
+
   public String getTableName() {
-    return tableName;
+    return getConfig().getTable();
+  }
+
+  @Option(
+      names = {"--num-rows"},
+      description = "Number of rows to generate/select")
+  public void setNumRows(long numRows) {
+    ensureParent().getCliConfig().setNumRows(numRows);
   }
 
   public long getNumRows() {
-    return numRows;
+    Long val = getConfig().getNumRows();
+    return val != null ? val : getDefaultNumRows();
+  }
+
+  @Option(
+      names = {"--tps"},
+      description = "Target transactions per second")
+  public void setTps(double tps) {
+    ensureParent().getCliConfig().setTps(tps);
   }
 
   public double getTps() {
-    return tps;
+    Double val = getConfig().getTps();
+    return val != null ? val : getDefaultTps();
+  }
+
+  @Option(
+      names = {"--threads"},
+      description = "Number of threads in the pool (default: 10)")
+  public void setThreads(int threads) {
+    ensureParent().getCliConfig().setThreads(threads);
   }
 
   public int getThreads() {
-    return threads;
+    Integer val = getConfig().getThreads();
+    return val != null ? val : getDefaultThreads();
+  }
+
+  @Option(
+      names = {"--load-type"},
+      description = "Load type (STEADY, SPIKY, GRADUAL, CLOSED_LOOP) (default: STEADY)",
+      converter = LoadTypeConverter.class)
+  public void setLoadType(LoadType loadType) {
+    ensureParent().getCliConfig().setLoadType(loadType);
   }
 
   public LoadType getLoadType() {
-    return loadType;
+    LoadType val = getConfig().getLoadType();
+    return val != null ? val : LoadType.STEADY;
+  }
+
+  @Option(
+      names = {"--cycle-duration"},
+      description = "Duration of a full cycle for gradual load")
+  public void setCycleDuration(String cycleDuration) {
+    ensureParent().getCliConfig().setCycleDuration(cycleDuration);
+  }
+
+  @Option(
+      names = {"--peak-factor"},
+      description = "Ratio of peak rate to average rate for gradual load")
+  public void setPeakFactor(Double peakFactor) {
+    ensureParent().getCliConfig().setPeakFactor(peakFactor);
+  }
+
+  @Option(
+      names = {"--burst-factor"},
+      description = "Ratio of burst rate to average rate")
+  public void setBurstFactor(Double burstFactor) {
+    ensureParent().getCliConfig().setBurstFactor(burstFactor);
+  }
+
+  @Option(
+      names = {"--burst-duration"},
+      description = "Average duration of a burst in seconds")
+  public void setBurstDuration(Double burstDuration) {
+    ensureParent().getCliConfig().setBurstDuration(burstDuration);
+  }
+
+  @Option(
+      names = {"--burst-fraction"},
+      description = "Fraction of total time spent in the burst state")
+  public void setBurstFraction(Double burstFraction) {
+    ensureParent().getCliConfig().setBurstFraction(burstFraction);
   }
 
   public BenchmarkApp getParent() {
@@ -118,7 +162,9 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
   }
 
   public BenchmarkConfig applyYamlConfig() throws IOException {
-    BenchmarkConfig config = parent.applyParentYamlConfig(this.configPath);
+    BenchmarkApp app = ensureParent();
+    BenchmarkConfig cliConfig = app.getCliConfig();
+    BenchmarkConfig config = app.applyParentYamlConfig(this.configPath);
     if (config.getBenchmarkType() != null
         && spec != null
         && spec.name() != null
@@ -134,46 +180,50 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
       config.setBenchmarkType(spec.name());
     }
 
-    this.tableName = BenchmarkApp.mergeOption(spec, "--table", this.tableName, config.getTable());
-    config.setTable(this.tableName);
+    config.setTable(
+        BenchmarkApp.resolveOption(spec, "--table", cliConfig.getTable(), config.getTable(), null));
+    config.setNumRows(
+        BenchmarkApp.resolveOption(
+            spec, "--num-rows", cliConfig.getNumRows(), config.getNumRows(), getDefaultNumRows()));
+    config.setTps(
+        BenchmarkApp.resolveOption(
+            spec, "--tps", cliConfig.getTps(), config.getTps(), getDefaultTps()));
+    config.setThreads(
+        BenchmarkApp.resolveOption(
+            spec, "--threads", cliConfig.getThreads(), config.getThreads(), getDefaultThreads()));
+    config.setLoadType(
+        BenchmarkApp.resolveOption(
+            spec, "--load-type", cliConfig.getLoadType(), config.getLoadType(), LoadType.STEADY));
+    config.setCycleDuration(
+        BenchmarkApp.resolveOption(
+            spec,
+            "--cycle-duration",
+            cliConfig.getCycleDuration(),
+            config.getCycleDuration(),
+            null));
+    config.setPeakFactor(
+        BenchmarkApp.resolveOption(
+            spec, "--peak-factor", cliConfig.getPeakFactor(), config.getPeakFactor(), null));
+    config.setBurstFactor(
+        BenchmarkApp.resolveOption(
+            spec, "--burst-factor", cliConfig.getBurstFactor(), config.getBurstFactor(), null));
+    config.setBurstDuration(
+        BenchmarkApp.resolveOption(
+            spec,
+            "--burst-duration",
+            cliConfig.getBurstDuration(),
+            config.getBurstDuration(),
+            null));
+    config.setBurstFraction(
+        BenchmarkApp.resolveOption(
+            spec,
+            "--burst-fraction",
+            cliConfig.getBurstFraction(),
+            config.getBurstFraction(),
+            null));
 
-    this.numRows = BenchmarkApp.mergeOption(spec, "--num-rows", this.numRows, config.getNumRows());
-    config.setNumRows(this.numRows);
-
-    this.tps = BenchmarkApp.mergeOption(spec, "--tps", this.tps, config.getTps());
-    config.setTps(this.tps);
-
-    this.threads = BenchmarkApp.mergeOption(spec, "--threads", this.threads, config.getThreads());
-    config.setThreads(this.threads);
-
-    this.loadType =
-        BenchmarkApp.mergeOption(spec, "--load-type", this.loadType, config.getLoadType());
-    config.setLoadType(this.loadType);
-
-    this.cycleDuration =
-        BenchmarkApp.mergeOption(
-            spec, "--cycle-duration", this.cycleDuration, config.getCycleDuration());
-    config.setCycleDuration(this.cycleDuration);
-
-    this.peakFactor =
-        BenchmarkApp.mergeOption(spec, "--peak-factor", this.peakFactor, config.getPeakFactor());
-    config.setPeakFactor(this.peakFactor);
-
-    this.burstFactor =
-        BenchmarkApp.mergeOption(spec, "--burst-factor", this.burstFactor, config.getBurstFactor());
-    config.setBurstFactor(this.burstFactor);
-
-    this.burstDuration =
-        BenchmarkApp.mergeOption(
-            spec, "--burst-duration", this.burstDuration, config.getBurstDuration());
-    config.setBurstDuration(this.burstDuration);
-
-    this.burstFraction =
-        BenchmarkApp.mergeOption(
-            spec, "--burst-fraction", this.burstFraction, config.getBurstFraction());
-    config.setBurstFraction(this.burstFraction);
-
-    parent.validateConnection(spec);
+    app.validateConnection(spec);
+    String tableName = config.getTable();
     if (tableName == null || tableName.trim().isEmpty()) {
       CommandLine cmdLine =
           spec != null && spec.commandLine() != null ? spec.commandLine() : new CommandLine(this);
@@ -195,49 +245,40 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
     boolean hasStepSchedule = config.getSteps() != null && !config.getSteps().isEmpty();
 
     if (!hasStepSchedule) {
-      if (loadType == LoadType.STEADY) {
-        if (cycleDuration != null
-            || peakFactor != null
-            || burstFactor != null
-            || burstDuration != null
-            || burstFraction != null) {
+      if (config.getLoadType() == LoadType.STEADY) {
+        if (config.getCycleDuration() != null
+            || config.getPeakFactor() != null
+            || config.getBurstFactor() != null
+            || config.getBurstDuration() != null
+            || config.getBurstFraction() != null) {
           throw new IllegalArgumentException(
               "Cannot specify burst or gradual load options when load-type is steady");
         }
-      } else if (loadType == LoadType.SPIKY) {
-        if (cycleDuration != null || peakFactor != null) {
+      } else if (config.getLoadType() == LoadType.SPIKY) {
+        if (config.getCycleDuration() != null || config.getPeakFactor() != null) {
           throw new IllegalArgumentException(
               "Cannot specify gradual load options when load-type is spiky");
         }
-        if (burstFactor == null) burstFactor = 1.0;
-        if (burstDuration == null) burstDuration = 1.0;
-        if (burstFraction == null) burstFraction = 0.1;
-      } else if (loadType == LoadType.GRADUAL) {
-        if (burstFactor != null || burstDuration != null || burstFraction != null) {
+      } else if (config.getLoadType() == LoadType.GRADUAL) {
+        if (config.getBurstFactor() != null
+            || config.getBurstDuration() != null
+            || config.getBurstFraction() != null) {
           throw new IllegalArgumentException(
               "Cannot specify burst load options when load-type is gradual");
         }
-        if (cycleDuration == null) cycleDuration = "1h";
-        if (peakFactor == null) peakFactor = 2.0;
       }
     }
 
-    // Set defaults for anything still null to avoid NPE during unboxing
-    if (burstFactor == null) burstFactor = 1.0;
-    if (burstDuration == null) burstDuration = 1.0;
-    if (burstFraction == null) burstFraction = 0.1;
-    if (cycleDuration == null) cycleDuration = "1h";
-    if (peakFactor == null) peakFactor = 2.0;
-
-    config.setBurstFactor(burstFactor);
-    config.setBurstDuration(burstDuration);
-    config.setBurstFraction(burstFraction);
-    config.setCycleDuration(cycleDuration);
-    config.setPeakFactor(peakFactor);
+    // Set defaults on config for anything still null to avoid NPE during unboxing
+    if (config.getBurstFactor() == null) config.setBurstFactor(1.0);
+    if (config.getBurstDuration() == null) config.setBurstDuration(1.0);
+    if (config.getBurstFraction() == null) config.setBurstFraction(0.1);
+    if (config.getCycleDuration() == null) config.setCycleDuration("1h");
+    if (config.getPeakFactor() == null) config.setPeakFactor(2.0);
 
     Server server = null;
     if (Boolean.TRUE.equals(config.getMock())) {
-      server = MockServerUtil.startMockSpannerServer(parent, config.getTable());
+      server = MockServerUtil.startMockSpannerServer(ensureParent(), config.getTable());
     }
 
     try {
@@ -272,22 +313,7 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
             spanner.getDatabaseClient(
                 DatabaseId.of(config.getProject(), config.getInstance(), config.getDatabase()));
 
-        Duration duration = AbstractBenchmark.parseDuration(config.getDuration());
-        boolean forAlerting = Boolean.TRUE.equals(config.getForAlerting());
-        String benchmarkName = config.getBenchmarkName();
-        AbstractBenchmark benchmark =
-            createBenchmark(
-                client,
-                metrics.latencyHistogram,
-                metrics.operationCounter,
-                metrics.errorCounter,
-                metrics.memoryUsageHistogram,
-                metrics.cpuUtilizationHistogram,
-                config.getResourceProbeInterval(),
-                duration,
-                forAlerting,
-                benchmarkName,
-                Boolean.TRUE.equals(config.getMock()));
+        AbstractBenchmark benchmark = createBenchmark(client, metrics, config);
         boolean effectiveMeasureHeapLeak = Boolean.TRUE.equals(config.getMeasureHeapLeak());
         Duration effectiveIdleDuration =
             AbstractBenchmark.parseDuration(config.getPostTestIdleDuration());
@@ -311,17 +337,7 @@ public abstract class AbstractBenchmarkCommand implements Runnable {
   }
 
   protected abstract AbstractBenchmark createBenchmark(
-      DatabaseClient client,
-      LongHistogram latencyHistogram,
-      LongCounter operationCounter,
-      LongCounter errorCounter,
-      LongHistogram memoryUsageHistogram,
-      DoubleHistogram cpuUtilizationHistogram,
-      String resourceProbeInterval,
-      Duration duration,
-      boolean forAlerting,
-      String benchmarkName,
-      boolean isMock);
+      DatabaseClient client, BenchmarkMetrics metrics, BenchmarkConfig config);
 
   public static class LoadTypeConverter implements ITypeConverter<LoadType> {
     @Override

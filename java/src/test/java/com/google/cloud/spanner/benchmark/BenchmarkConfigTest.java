@@ -244,7 +244,7 @@ public class BenchmarkConfigTest {
   }
 
   @Test
-  public void testNoCompatibilityShimsRemain() {
+  public void testNoCompatibilityShimsRemain() throws Exception {
     for (Class<?> nested : LoadType.class.getDeclaredClasses()) {
       assertFalse(
           "LoadType.WorkloadStep shim must be removed",
@@ -256,5 +256,73 @@ public class BenchmarkConfigTest {
           nested.getSimpleName().equals("BenchmarkConfig"));
     }
     assertEquals(Object.class, BenchmarkConfig.WorkloadStep.class.getSuperclass());
+
+    String[] duplicateFieldNames = {
+      "projectId",
+      "instanceId",
+      "databaseId",
+      "host",
+      "mock",
+      "noMetrics",
+      "duration",
+      "forAlerting",
+      "benchmarkName",
+      "resourceProbeInterval",
+      "tableName",
+      "numRows",
+      "tps",
+      "threads",
+      "loadType",
+      "cycleDuration",
+      "peakFactor",
+      "burstFactor",
+      "burstDuration",
+      "burstFraction",
+      "warehouses",
+      "clients",
+      "items",
+      "extended"
+    };
+    Class<?>[] commandClasses = {
+      BenchmarkApp.class,
+      AbstractBenchmarkCommand.class,
+      PointSelectCommand.class,
+      SelectAndUpdateCommand.class,
+      ReadLargeResultSetCommand.class,
+      ReadNarrowResultSetCommand.class,
+      TpccCommand.class,
+      TpccInitCommand.class
+    };
+    for (Class<?> cls : commandClasses) {
+      for (java.lang.reflect.Field field : cls.getDeclaredFields()) {
+        for (String forbidden : duplicateFieldNames) {
+          assertFalse(
+              cls.getSimpleName()
+                  + " must not declare duplicate configuration field '"
+                  + forbidden
+                  + "' (access from BenchmarkConfig instead)",
+              field.getName().equals(forbidden));
+        }
+      }
+    }
+
+    ReadLargeResultSetCommand largeCmd = new ReadLargeResultSetCommand();
+    assertEquals(100000L, largeCmd.getNumRows());
+    assertEquals(0.05, largeCmd.getTps(), 0.0001);
+    assertEquals(10, largeCmd.getDefaultThreads());
+
+    ReadNarrowResultSetCommand narrowCmd = new ReadNarrowResultSetCommand();
+    assertEquals(200000L, narrowCmd.getNumRows());
+    assertEquals(0.05, narrowCmd.getTps(), 0.0001);
+
+    CommandLine rootCmd = new CommandLine(new BenchmarkApp());
+    assertTrue(rootCmd.getUsageMessage().contains("default: 10s"));
+    assertTrue(
+        rootCmd.getSubcommands().get("point-select").getUsageMessage().contains("default: 10"));
+    assertTrue(
+        rootCmd.getSubcommands().get("point-select").getUsageMessage().contains("default: STEADY"));
+    assertTrue(rootCmd.getSubcommands().get("tpcc").getUsageMessage().contains("default: 100000"));
+    assertTrue(
+        rootCmd.getSubcommands().get("tpcc-init").getUsageMessage().contains("default: 100000"));
   }
 }
